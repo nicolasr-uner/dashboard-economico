@@ -1,12 +1,10 @@
 venv/
 .env
-db.sqlite3
 __pycache__/
 *.pyc
 *.pyo
 staticfiles/
 .DS_Store
-*.sqlite3
 .idea/
 .vscode/
 node_modules/
