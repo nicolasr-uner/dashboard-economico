@@ -1,0 +1,183 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}{{ variable.name }}{% endblock %}
+{% block content %}
+<div class="flex items-center justify-between mb-6">
+    <div>
+        <div class="flex items-center space-x-2 mb-1">
+            <span class="text-2xl">{{ variable.country.flag_emoji }}</span>
+            <span class="text-gray-400">{{ variable.country.name }}</span>
+        </div>
+        <h1 class="text-2xl font-bold text-white">{{ variable.name }}</h1>
+        <p class="text-gray-400 mt-1">{{ variable.description }}</p>
+    </div>
+    <button onclick="runScraper({{ variable.id }})"
+            class="bg-blue-600 hover:bg-blue-700 text-white px-5 py-2 rounded-lg font-medium transition-colors">
+        Ejecutar Scraping
+    </button>
+</div>
+
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <div class="text-2xl font-bold text-blue-400">
+            {% with variable.latest_value as lv %}
+            {% if lv %}{{ lv|floatformat:2 }}{% else %}-{% endif %}
+            {% endwith %}
+        </div>
+        <div class="text-gray-500 text-xs mt-1">Ultimo valor ({{ variable.unit }})</div>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <div class="text-2xl font-bold text-purple-400">{{ historical|length }}</div>
+        <div class="text-gray-500 text-xs mt-1">Registros historicos</div>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <div class="text-2xl font-bold text-yellow-400">{{ ai_logs|length }}</div>
+        <div class="text-gray-500 text-xs mt-1">Analisis de IA</div>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-4 border border-gray-700">
+        <div class="text-lg font-bold text-gray-300">{{ variable.get_frequency_display }}</div>
+        <div class="text-gray-500 text-xs mt-1">Frecuencia</div>
+    </div>
+</div>
+
+<!-- Grafica -->
+<div class="bg-gray-800 rounded-xl p-6 border border-gray-700 mb-6">
+    <h2 class="text-lg font-semibold mb-4 text-white">Serie Historica</h2>
+    <div class="chart-container" style="height: 260px;">
+        <canvas id="histChart"></canvas>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+    <!-- Tabla historica -->
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-700">
+            <h2 class="text-lg font-semibold text-white">Datos Historicos</h2>
+        </div>
+        <div class="max-h-96 overflow-y-auto">
+            <table class="w-full text-sm">
+                <thead class="bg-gray-700 text-gray-400 sticky top-0">
+                    <tr>
+                        <th class="px-4 py-2 text-left">Fecha</th>
+                        <th class="px-4 py-2 text-right">Valor</th>
+                        <th class="px-4 py-2 text-left">Estado</th>
+                    </tr>
+                </thead>
+                <tbody class="divide-y divide-gray-700">
+                    {% for h in historical %}
+                    <tr class="hover:bg-gray-700 {% if h.is_anomaly %}bg-red-900/10{% endif %}">
+                        <td class="px-4 py-2 text-gray-300 font-mono">{{ h.date }}</td>
+                        <td class="px-4 py-2 text-right font-mono text-blue-300">{{ h.value|floatformat:2 }}</td>
+                        <td class="px-4 py-2">
+                            {% if h.is_anomaly %}
+                                <span class="text-xs text-red-400">Anomalia</span>
+                            {% else %}
+                                <span class="text-xs text-green-500">Normal</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="3" class="px-4 py-6 text-center text-gray-500">Sin datos historicos</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- Analisis IA -->
+    <div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+        <div class="px-6 py-4 border-b border-gray-700 flex items-center justify-between">
+            <h2 class="text-lg font-semibold text-white">Analisis IA</h2>
+            <button onclick="requestAnalysis({{ variable.id }})" class="text-xs bg-purple-700 hover:bg-purple-600 px-3 py-1 rounded text-white transition-colors">
+                Analizar ahora
+            </button>
+        </div>
+        <div class="p-4 space-y-3 max-h-96 overflow-y-auto">
+            {% for log in ai_logs %}
+            <div class="bg-gray-700 rounded-lg p-3">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="text-xs text-gray-400 font-mono">{{ log.analyzed_at|date:"d/m/Y H:i" }}</span>
+                    <div class="flex gap-2">
+                        <span class="text-xs px-2 py-0.5 rounded-full badge-{{ log.ai_verdict }}">{{ log.ai_verdict }}</span>
+                        <span class="text-xs px-2 py-0.5 rounded-full bg-gray-600 text-gray-300">{{ log.risk_level }}</span>
+                    </div>
+                </div>
+                <div class="text-red-400 text-xs font-mono mb-1">Delta {{ log.detected_change|floatformat:2 }}%</div>
+                <p class="text-gray-300 text-xs">{{ log.justification }}</p>
+                {% if log.recommendation %}
+                <p class="text-blue-300 text-xs mt-1 italic">{{ log.recommendation }}</p>
+                {% endif %}
+            </div>
+            {% empty %}
+            <div class="text-center py-6 text-gray-500">Sin analisis de IA disponibles</div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+
+<div id="scraper-result" class="hidden fixed bottom-4 right-4 bg-gray-800 border border-gray-600 rounded-xl p-4 shadow-xl max-w-sm text-sm"></div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const labels = {{ chart_labels|safe }};
+const values = {{ chart_values|safe }};
+
+new Chart(document.getElementById('histChart').getContext('2d'), {
+    type: 'line',
+    data: {
+        labels: labels.map(l => l.substring(0, 7)),
+        datasets: [{
+            label: '{{ variable.name }}',
+            data: values,
+            borderColor: '#3b82f6',
+            backgroundColor: '#3b82f620',
+            tension: 0.4,
+            fill: true,
+            pointRadius: 4,
+            pointHoverRadius: 7,
+        }]
+    },
+    options: {
+        responsive: true, maintainAspectRatio: false,
+        plugins: {
+            legend: { labels: { color: '#9ca3af' } },
+            tooltip: { backgroundColor: '#1a1d27', borderColor: '#343748', borderWidth: 1 }
+        },
+        scales: {
+            x: { ticks: { color: '#6b7280' }, grid: { color: '#252836' } },
+            y: { ticks: { color: '#6b7280', callback: v => v + ' {{ variable.unit }}' }, grid: { color: '#252836' } }
+        }
+    }
+});
+
+function getCookie(name) {
+    const v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+    return v ? v[2] : null;
+}
+
+async function runScraper(varId) {
+    const div = document.getElementById('scraper-result');
+    div.classList.remove('hidden');
+    div.innerHTML = '<span class="text-gray-400">Ejecutando scraping...</span>';
+    const resp = await fetch(`/api/scraper/run/${varId}/`, {
+        method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}
+    });
+    const data = await resp.json();
+    if (data.success) {
+        div.innerHTML = `<span class="text-green-400">OK Valor: ${data.value} ${data.is_anomaly ? ' Anomalia' : ''}</span>`;
+    } else {
+        div.innerHTML = `<span class="text-red-400">Error: ${data.error}</span>`;
+    }
+    setTimeout(() => div.classList.add('hidden'), 5000);
+}
+
+async function requestAnalysis(varId) {
+    const resp = await fetch(`/api/ai/analyze/${varId}/`, {
+        method: 'POST', headers: {'X-CSRFToken': getCookie('csrftoken')}
+    });
+    const data = await resp.json();
+    alert(data.success ? `Veredicto: ${data.verdict}\n${data.justification}` : `Error: ${data.error || data.justification}`);
+    location.reload();
+}
+</script>
+{% endblock %}

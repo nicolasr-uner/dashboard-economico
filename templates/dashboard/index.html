@@ -1,0 +1,190 @@
+{% extends 'dashboard/base.html' %}
+
+{% block title %}Inicio{% endblock %}
+
+{% block content %}
+<!-- Tarjetas de resumen -->
+<div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+    <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
+        <div class="text-3xl font-bold text-blue-400">{{ total_variables }}</div>
+        <div class="text-gray-400 text-sm mt-1">Variables activas</div>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
+        <div class="text-3xl font-bold text-purple-400">{{ total_countries }}</div>
+        <div class="text-gray-400 text-sm mt-1">Paises monitoreados</div>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
+        <div class="text-3xl font-bold {% if recent_alerts %}text-yellow-400{% else %}text-green-400{% endif %}">{{ recent_alerts|length }}</div>
+        <div class="text-gray-400 text-sm mt-1">Alertas IA recientes</div>
+    </div>
+    <div class="bg-gray-800 rounded-xl p-5 border border-gray-700">
+        <div class="text-3xl font-bold {% if anomalies_this_month > 0 %}text-red-400{% else %}text-green-400{% endif %}">{{ anomalies_this_month }}</div>
+        <div class="text-gray-400 text-sm mt-1">Anomalias este mes</div>
+    </div>
+</div>
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-8">
+    <!-- Grafica comparativa IPC -->
+    <div class="lg:col-span-2 bg-gray-800 rounded-xl p-6 border border-gray-700">
+        <h2 class="text-lg font-semibold mb-4 text-white">Comparativa de Inflacion Regional</h2>
+        <div class="chart-container" style="height: 280px;">
+            <canvas id="ipcChart"></canvas>
+        </div>
+    </div>
+
+    <!-- Alertas IA -->
+    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+        <h2 class="text-lg font-semibold mb-4 text-white">Alertas Analizadas por IA</h2>
+        {% if recent_alerts %}
+            <div class="space-y-3">
+                {% for alert in recent_alerts %}
+                <div class="bg-gray-700 rounded-lg p-3">
+                    <div class="flex items-center justify-between mb-1">
+                        <span class="text-sm font-medium text-white">{{ alert.variable.country.flag_emoji }} {{ alert.variable.name }}</span>
+                        <span class="text-xs px-2 py-0.5 rounded-full badge-{{ alert.ai_verdict }}">{{ alert.ai_verdict }}</span>
+                    </div>
+                    <div class="text-xs text-red-400 font-mono">Delta {{ alert.detected_change|floatformat:2 }}%</div>
+                    <div class="text-xs text-gray-400 mt-1">{{ alert.justification|truncatewords:15 }}</div>
+                </div>
+                {% endfor %}
+            </div>
+        {% else %}
+            <div class="text-center py-8">
+                <div class="text-3xl mb-2">&#x1F7E2;</div>
+                <div class="text-green-400 font-medium">Sin alertas recientes</div>
+                <div class="text-gray-500 text-sm mt-1">Todos los indicadores normales</div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Tabla de variables -->
+<div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-700">
+        <h2 class="text-lg font-semibold text-white">Variables Macroeconomicas</h2>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-700 text-gray-300">
+                <tr>
+                    <th class="px-4 py-3 text-left">Pais</th>
+                    <th class="px-4 py-3 text-left">Variable</th>
+                    <th class="px-4 py-3 text-right">Ultimo valor</th>
+                    <th class="px-4 py-3 text-left">Unidad</th>
+                    <th class="px-4 py-3 text-right">Variacion mensual</th>
+                    <th class="px-4 py-3 text-left">Frecuencia</th>
+                    <th class="px-4 py-3 text-left">Estado</th>
+                    <th class="px-4 py-3 text-left">Detalle</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                {% for item in variables_with_data %}
+                <tr class="hover:bg-gray-700 transition-colors">
+                    <td class="px-4 py-3">
+                        <span class="text-lg">{{ item.country.flag_emoji }}</span>
+                        <span class="text-gray-300 ml-1">{{ item.country.code }}</span>
+                    </td>
+                    <td class="px-4 py-3 text-white font-medium">{{ item.variable.name }}</td>
+                    <td class="px-4 py-3 text-right font-mono text-blue-300">
+                        {% if item.latest %}{{ item.latest.value|floatformat:2 }}{% else %}<span class="text-gray-500">-</span>{% endif %}
+                    </td>
+                    <td class="px-4 py-3 text-gray-400">{{ item.variable.unit }}</td>
+                    <td class="px-4 py-3 text-right font-mono">
+                        {% if item.change is not None %}
+                            {% if item.change > 0 %}
+                                <span class="text-red-400">+ {{ item.change|floatformat:2 }}%</span>
+                            {% elif item.change < 0 %}
+                                <span class="text-green-400">{{ item.change|floatformat:2 }}%</span>
+                            {% else %}
+                                <span class="text-gray-400">0.00%</span>
+                            {% endif %}
+                        {% else %}
+                            <span class="text-gray-500">-</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3">
+                        <span class="text-xs px-2 py-1 bg-gray-700 rounded text-gray-300">{{ item.variable.get_frequency_display }}</span>
+                    </td>
+                    <td class="px-4 py-3">
+                        {% if item.latest and item.latest.is_anomaly %}
+                            <span class="text-xs px-2 py-1 bg-red-900 text-red-300 rounded border border-red-700">Anomalia</span>
+                        {% else %}
+                            <span class="text-xs px-2 py-1 bg-green-900 text-green-300 rounded border border-green-700">Normal</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3">
+                        <a href="/variable/{{ item.variable.id }}/" class="text-blue-400 hover:text-blue-300 text-xs">Ver</a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr>
+                    <td colspan="8" class="px-4 py-8 text-center text-gray-500">
+                        No hay variables. <a href="/configuracion/" class="text-blue-400">Anadir variables</a> o ejecutar <code>python manage.py seed_data</code>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const chartData = {{ chart_data|safe }};
+const COLORS = ['#3b82f6', '#f59e0b', '#10b981', '#ef4444', '#8b5cf6', '#06b6d4'];
+
+// Obtener todos los labels unicos
+const allLabels = new Set();
+Object.values(chartData).forEach(d => d.labels.forEach(l => allLabels.add(l)));
+const labels = Array.from(allLabels).sort();
+
+const datasets = Object.entries(chartData).map(([country, d], i) => ({
+    label: `${d.flag} ${country}`,
+    data: labels.map(label => {
+        const idx = d.labels.indexOf(label);
+        return idx >= 0 ? d.data[idx] : null;
+    }),
+    borderColor: COLORS[i % COLORS.length],
+    backgroundColor: COLORS[i % COLORS.length] + '20',
+    tension: 0.4,
+    fill: false,
+    spanGaps: true,
+    pointRadius: 4,
+    pointHoverRadius: 6,
+}));
+
+const ctx = document.getElementById('ipcChart').getContext('2d');
+new Chart(ctx, {
+    type: 'line',
+    data: { labels: labels.map(l => l.substring(0, 7)), datasets },
+    options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+            legend: {
+                labels: { color: '#9ca3af', font: { size: 12 } }
+            },
+            tooltip: {
+                backgroundColor: '#1a1d27',
+                borderColor: '#343748',
+                borderWidth: 1,
+                callbacks: {
+                    label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2)}%`
+                }
+            }
+        },
+        scales: {
+            x: {
+                ticks: { color: '#6b7280', maxTicksLimit: 6 },
+                grid: { color: '#252836' }
+            },
+            y: {
+                ticks: { color: '#6b7280', callback: v => v + '%' },
+                grid: { color: '#252836' }
+            }
+        }
+    }
+});
+</script>
+{% endblock %}

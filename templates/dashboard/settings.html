@@ -1,0 +1,222 @@
+{% extends 'dashboard/base.html' %}
+{% block title %}Configuracion{% endblock %}
+{% block content %}
+<div class="mb-6">
+    <h1 class="text-2xl font-bold text-white">Configuracion</h1>
+    <p class="text-gray-400 mt-1">Gestion de paises y variables macroeconomicas</p>
+</div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+    <!-- Anadir Pais -->
+    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+        <h2 class="text-lg font-semibold mb-4 text-white">Anadir Pais</h2>
+        <form method="POST">
+            {% csrf_token %}
+            <div class="space-y-4">
+                {% for field in country_form %}
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">{{ field.label }}</label>
+                    {{ field }}
+                    {% if field.errors %}
+                        <p class="text-red-400 text-xs mt-1">{{ field.errors.0 }}</p>
+                    {% endif %}
+                </div>
+                {% endfor %}
+                <button type="submit" name="save_country" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
+                    Guardar Pais
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Anadir Variable -->
+    <div class="bg-gray-800 rounded-xl p-6 border border-gray-700">
+        <h2 class="text-lg font-semibold mb-4 text-white">Anadir Variable</h2>
+        <form method="POST">
+            {% csrf_token %}
+            <div class="space-y-4">
+                {% for field in variable_form %}
+                <div>
+                    <label class="block text-sm text-gray-400 mb-1">{{ field.label }}</label>
+                    {% if field.name == 'css_selector' %}
+                    <div class="flex gap-2">
+                        {{ field }}
+                        <button type="button" id="test-selector-btn" class="bg-yellow-600 hover:bg-yellow-700 text-white px-3 py-2 rounded-lg text-sm whitespace-nowrap transition-colors">
+                            Probar
+                        </button>
+                    </div>
+                    <div id="test-result" class="mt-2 hidden text-sm p-2 rounded"></div>
+                    {% else %}
+                    {{ field }}
+                    {% endif %}
+                    {% if field.errors %}
+                        <p class="text-red-400 text-xs mt-1">{{ field.errors.0 }}</p>
+                    {% endif %}
+                </div>
+                {% endfor %}
+                <button type="submit" name="save_variable" class="w-full bg-green-600 hover:bg-green-700 text-white font-medium py-2 px-4 rounded-lg transition-colors">
+                    Guardar Variable
+                </button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Boton Scrapear Todas -->
+<div class="flex justify-end mb-4">
+    <button onclick="runAll()" class="bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-6 rounded-lg transition-colors">
+        Scrapear Todas las Variables
+    </button>
+</div>
+<div id="run-all-result" class="hidden bg-gray-800 rounded-xl p-4 border border-gray-700 mb-6 text-sm"></div>
+
+<!-- Tabla de Paises -->
+<div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden mb-6">
+    <div class="px-6 py-4 border-b border-gray-700">
+        <h2 class="text-lg font-semibold text-white">Paises registrados ({{ countries|length }})</h2>
+    </div>
+    <table class="w-full text-sm">
+        <thead class="bg-gray-700 text-gray-300">
+            <tr>
+                <th class="px-4 py-3 text-left">Bandera</th>
+                <th class="px-4 py-3 text-left">Nombre</th>
+                <th class="px-4 py-3 text-left">Codigo ISO</th>
+            </tr>
+        </thead>
+        <tbody class="divide-y divide-gray-700">
+            {% for country in countries %}
+            <tr class="hover:bg-gray-700">
+                <td class="px-4 py-3 text-2xl">{{ country.flag_emoji }}</td>
+                <td class="px-4 py-3 text-white">{{ country.name }}</td>
+                <td class="px-4 py-3 text-gray-400 font-mono">{{ country.code }}</td>
+            </tr>
+            {% empty %}
+            <tr><td colspan="3" class="px-4 py-6 text-center text-gray-500">Sin paises registrados</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- Tabla de Variables -->
+<div class="bg-gray-800 rounded-xl border border-gray-700 overflow-hidden">
+    <div class="px-6 py-4 border-b border-gray-700">
+        <h2 class="text-lg font-semibold text-white">Variables registradas ({{ variables|length }})</h2>
+    </div>
+    <div class="overflow-x-auto">
+        <table class="w-full text-sm">
+            <thead class="bg-gray-700 text-gray-300">
+                <tr>
+                    <th class="px-4 py-3 text-left">Pais</th>
+                    <th class="px-4 py-3 text-left">Nombre</th>
+                    <th class="px-4 py-3 text-left">Unidad</th>
+                    <th class="px-4 py-3 text-left">Frecuencia</th>
+                    <th class="px-4 py-3 text-left">Activa</th>
+                    <th class="px-4 py-3 text-left">Acciones</th>
+                </tr>
+            </thead>
+            <tbody class="divide-y divide-gray-700">
+                {% for var in variables %}
+                <tr class="hover:bg-gray-700">
+                    <td class="px-4 py-3">{{ var.country.flag_emoji }} {{ var.country.code }}</td>
+                    <td class="px-4 py-3 text-white">{{ var.name }}</td>
+                    <td class="px-4 py-3 text-gray-400">{{ var.unit }}</td>
+                    <td class="px-4 py-3 text-gray-400">{{ var.get_frequency_display }}</td>
+                    <td class="px-4 py-3">
+                        {% if var.is_active %}
+                            <span class="text-green-400">si</span>
+                        {% else %}
+                            <span class="text-red-400">no</span>
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-3">
+                        <button onclick="runScraper({{ var.id }}, '{{ var.name }}')"
+                                class="bg-blue-700 hover:bg-blue-600 text-white text-xs px-3 py-1 rounded transition-colors">
+                            Scrapear
+                        </button>
+                        <a href="/variable/{{ var.id }}/" class="ml-2 text-blue-400 hover:text-blue-300 text-xs">Ver</a>
+                    </td>
+                </tr>
+                {% empty %}
+                <tr><td colspan="6" class="px-4 py-6 text-center text-gray-500">Sin variables registradas</td></tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+// Test selector CSS
+document.getElementById('test-selector-btn')?.addEventListener('click', async () => {
+    const url = document.getElementById('id_source_url')?.value;
+    const selector = document.getElementById('id_css_selector')?.value;
+    const isDynamic = document.getElementById('id_is_dynamic')?.checked;
+    const resultDiv = document.getElementById('test-result');
+
+    if (!url || !selector) {
+        resultDiv.textContent = 'Ingresa URL y selector CSS primero';
+        resultDiv.className = 'mt-2 text-sm p-2 rounded bg-yellow-900 text-yellow-300';
+        resultDiv.classList.remove('hidden');
+        return;
+    }
+
+    resultDiv.textContent = 'Probando...';
+    resultDiv.className = 'mt-2 text-sm p-2 rounded bg-gray-700 text-gray-300';
+    resultDiv.classList.remove('hidden');
+
+    try {
+        const resp = await fetch('/api/scraper/test/', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json', 'X-CSRFToken': getCookie('csrftoken')},
+            body: JSON.stringify({url, css_selector: selector, is_dynamic: isDynamic}),
+        });
+        const data = await resp.json();
+
+        if (data.success) {
+            resultDiv.innerHTML = `Exito — Texto: "${data.raw_text}" Valor: <strong>${data.value}</strong>`;
+            resultDiv.className = 'mt-2 text-sm p-2 rounded bg-green-900 text-green-300';
+        } else {
+            resultDiv.innerHTML = `Error: ${data.error}`;
+            resultDiv.className = 'mt-2 text-sm p-2 rounded bg-red-900 text-red-300';
+        }
+    } catch (e) {
+        resultDiv.textContent = 'Error de conexion: ' + e.message;
+        resultDiv.className = 'mt-2 text-sm p-2 rounded bg-red-900 text-red-300';
+    }
+});
+
+async function runScraper(varId, varName) {
+    if (!confirm(`Ejecutar scraping para "${varName}"?`)) return;
+    const resp = await fetch(`/api/scraper/run/${varId}/`, {
+        method: 'POST',
+        headers: {'X-CSRFToken': getCookie('csrftoken')},
+    });
+    const data = await resp.json();
+    if (data.success) {
+        alert(`OK ${varName}\nValor: ${data.value}\n${data.is_anomaly ? 'Anomalia detectada!' : 'Normal'}`);
+    } else {
+        alert(`Error: ${data.error}`);
+    }
+}
+
+async function runAll() {
+    const div = document.getElementById('run-all-result');
+    div.classList.remove('hidden');
+    div.innerHTML = '<span class="text-gray-400">Ejecutando scraping de todas las variables...</span>';
+
+    const resp = await fetch('/api/scraper/run-all/', {
+        method: 'POST',
+        headers: {'X-CSRFToken': getCookie('csrftoken')},
+    });
+    const data = await resp.json();
+    div.innerHTML = `Completado: ${data.ok} ok, ${data.errors} errores de ${data.total} variables.`;
+    div.className = 'bg-gray-800 rounded-xl p-4 border border-gray-700 mb-6 text-sm text-green-300';
+}
+
+function getCookie(name) {
+    const v = document.cookie.match('(^|;) ?' + name + '=([^;]*)(;|$)');
+    return v ? v[2] : null;
+}
+</script>
+{% endblock %}
