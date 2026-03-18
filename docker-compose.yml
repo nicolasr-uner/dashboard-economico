@@ -14,5 +14,40 @@ services:
       - pgdata:/var/lib/postgresql/data
     restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    container_name: economic_brain_redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+
+  worker:
+    build: .
+    container_name: economic_brain_worker
+    command: celery -A scheduler.celery_app worker --loglevel=info
+    volumes:
+      - .:/app
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://dashboard_user:dashboard_password@db:5432/economic_brain
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
+  beat:
+    build: .
+    container_name: economic_brain_beat
+    command: celery -A scheduler.celery_app beat --loglevel=info
+    volumes:
+      - .:/app
+    environment:
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://dashboard_user:dashboard_password@db:5432/economic_brain
+    depends_on:
+      - db
+      - redis
+    restart: unless-stopped
+
 volumes:
   pgdata:
