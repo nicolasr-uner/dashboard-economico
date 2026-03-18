@@ -59,10 +59,22 @@ def main():
                         delta = round(((last_val - prev_val) / prev_val * 100), 2) if prev_val != 0 else 0
                         st.metric(label=f"{row['name']} ({row['unit']})", value=f"{last_val}", delta=f"{delta}%")
                         
-                        # Sparkline chart
                         fig = px.line(hist, x='date', y='value', title=f"Evolución {row['name']}")
                         fig.update_layout(height=200, margin=dict(l=0, r=0, t=30, b=0))
                         st.plotly_chart(fig, use_container_width=True)
+                        
+                        # --- NLA Context Module ---
+                        try:
+                            from models.db import engine
+                            logs = pd.read_sql(f"SELECT * FROM ai_analysis_log WHERE variable_id={row['id']} ORDER BY analyzed_at DESC LIMIT 1", engine)
+                            if not logs.empty:
+                                last_log = logs.iloc[0]
+                                with st.expander(f"Contexto NLA ({last_log['ai_verdict'].upper()})"):
+                                    st.write(f"**Justificación:** {last_log['justification']}")
+                                    if last_log.get('news_context'):
+                                        st.caption(f"**Contexto Vectorial:**\n{last_log['news_context']}")
+                        except Exception as e:
+                            pass
                     else:
                         st.metric(label=f"{row['name']}", value="Sin datos")
                         

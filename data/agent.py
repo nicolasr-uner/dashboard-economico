@@ -4,17 +4,9 @@ from scraper.engine import scrape
 from data.database import save_historical_data
 
 class VariableAgent:
-    """
-    Agente encargado de ingestar datos para variables existentes
-    y calcular proyecciones usando series temporales.
-    """
     
     @staticmethod
     def ingest_variable(variable_row: pd.Series) -> dict:
-        """
-        Extrae un nuevo valor para una variable y lo guarda en la base de datos.
-        Retorna un resumen de la operación.
-        """
         if not variable_row.get('source_url') or not variable_row.get('css_selector'):
             return {"success": False, "error": "URL o Selector CSS no definidos."}
         
@@ -26,6 +18,30 @@ class VariableAgent:
         
         if result['success'] and result['value'] is not None:
             today_str = datetime.now().strftime("%Y-%m-%d")
+            
+            # -------- Integración NLA (Contexto de Noticias & IA) --------
+            try:
+                from data.database import get_historical_data
+                hist_df = get_historical_data(variable_row['id'])
+                if not hist_df.empty:
+                    prev_val = hist_df['value'].iloc[-1]
+                    new_val = result['value']
+                    if prev_val != 0:
+                        delta = ((new_val - prev_val) / prev_val) * 100
+                        if abs(delta) > 2.0: # Anomalía: umbral de 2% 
+                            from models.db import SessionLocal
+                            from models.schema import MacroVariable
+                            from ai_engine.analyzer import analyze_anomaly
+                            
+                            session = SessionLocal()
+                            var_obj = session.query(MacroVariable).get(variable_row['id'])
+                            if var_obj:
+                                # Invocar análisis asíncrono
+                                analyze_anomaly(var_obj, delta, prev_val, new_val)
+                            session.close()
+            except Exception as e:
+                print(f"Error procesando anomalía NLA: {e}")
+            
             saved = save_historical_data(variable_row['id'], result['value'], today_str)
             if saved:
                 result['message'] = f"Valor {result['value']} guardado exitosamente."
