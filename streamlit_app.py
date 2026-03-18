@@ -8,10 +8,19 @@ from data.agent import VariableAgent
 
 # Configuración de página
 st.set_page_config(
-    page_title="Dashboard Económico AI",
-    page_icon="📈",
-    layout="wide"
+    page_title="Cerebro Económico NLA",
+    page_icon="🧠",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
+
+st.markdown("""
+<style>
+    .reportview-container {background: #f8fafc;}
+    h1 {color: #1e3a8a;}
+    .stMetric {background-color: white; padding: 15px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.05);}
+</style>
+""", unsafe_allow_html=True)
 
 # Cargar caché para base de datos
 @st.cache_data(ttl=600)
@@ -27,7 +36,10 @@ def load_history(variable_id):
     return get_historical_data(variable_id)
 
 def main():
-    st.title("📈 Modelación y Dashboard Económico")
+    st.markdown("<h1 style='text-align: center; font-weight: 800;'>🧠 Cerebro Económico Múlti-País NLA</h1>", unsafe_allow_html=True)
+    st.markdown("<p style='text-align: center; color: gray; font-size: 1.1em;'>Plataforma automatizada de inteligencia macroeconómica, recolección de noticias y modelación predictiva.</p>", unsafe_allow_html=True)
+    st.divider()
+
     st.sidebar.header("Filtros")
     
     countries_df = load_countries()
@@ -41,7 +53,7 @@ def main():
     
     variables_df = load_variables(selected_country_id)
     
-    tab1, tab2, tab3 = st.tabs(["📊 Vista General", "🔮 Modelación", "⚙️ Agente de Datos"])
+    tab1, tab_comp, tab2, tab3 = st.tabs(["📊 Vista General", "🌎 Comparativa Regional", "🔮 Modelación", "⚙️ Agente de Datos"])
     
     with tab1:
         st.subheader(f"Indicadores de {selected_country_name}")
@@ -78,6 +90,57 @@ def main():
                     else:
                         st.metric(label=f"{row['name']}", value="Sin datos")
                         
+    with tab_comp:
+        st.subheader("🌎 Comparativa Macro Regional")
+        st.markdown("Cruza y correlaciona el rendimiento de métricas clave a lo largo de América Latina.")
+        
+        try:
+            from models.db import engine
+            all_vars_df = pd.read_sql("SELECT DISTINCT name FROM dim_variable", engine)
+            
+            if not all_vars_df.empty:
+                var_names = all_vars_df['name'].tolist()
+                selected_var_name = st.selectbox("Seleccione el Indicador a cruzar", var_names)
+                
+                vars_to_compare = pd.read_sql(f"SELECT v.id, v.name, c.name as country FROM dim_variable v JOIN dim_country c ON v.country_id = c.id WHERE v.name = '{selected_var_name}'", engine)
+                
+                compare_data = []
+                for _, v_row in vars_to_compare.iterrows():
+                    h_df = load_history(v_row['id'])
+                    if not h_df.empty:
+                        # Convert data types gracefully if missing
+                        if 'value' in h_df.columns:
+                            h_df['value'] = pd.to_numeric(h_df['value'], errors='coerce')
+                        h_df['País'] = v_row['country']
+                        compare_data.append(h_df)
+                        
+                if compare_data:
+                    combined_df = pd.concat(compare_data)
+                    
+                    # Gráfica comparativa superpuesta
+                    fig_comp = px.line(combined_df, x='date', y='value', color='País', markers=True, 
+                                       title=f"Evolución Histórica Cruzada: {selected_var_name}")
+                    fig_comp.update_layout(height=400, hovermode="x unified")
+                    st.plotly_chart(fig_comp, use_container_width=True)
+                    
+                    st.divider()
+                    st.subheader("📊 Ranking Actualizado (Último Dato)")
+                    
+                    # Cajas de Ranking
+                    cols_comp = st.columns(len(compare_data))
+                    for i, df_c in enumerate(compare_data):
+                        country = df_c['País'].iloc[0]
+                        current_val = df_c.iloc[-1]['value']
+                        prev_val = df_c.iloc[-2]['value'] if len(df_c) > 1 else current_val
+                        delta_comp = round(((current_val - prev_val) / prev_val * 100), 2) if prev_val != 0 else 0
+                        cols_comp[i].metric(label=f"{country}", value=f"{current_val}", delta=f"{delta_comp}%")
+                else:
+                    st.info("No hay datos históricos para comparar este indicador.")
+            else:
+                st.warning("No hay variables definidas.")
+        except Exception as e:
+            st.error(f"Error cargando comparativa: {e}")
+
     with tab2:
         st.subheader("Modelación y Proyecciones")
         if not variables_df.empty:
