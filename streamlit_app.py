@@ -78,7 +78,11 @@ def main():
                 proj_df = VariableAgent.calculate_projection(hist_df, periods=6)
                 
                 # Combinar real y proyección para gráfica
-                hist_df['type'] = 'Real'
+                if 'data_type' in hist_df.columns:
+                    hist_df['type'] = hist_df['data_type'].replace({'REAL_OFFICIAL': 'Real', 'PROJECTION': 'Proyección', 'ESTIMATION': 'Estimado'})
+                else:
+                    hist_df['type'] = 'Real'
+                    
                 merged = pd.concat([hist_df[['date', 'value', 'type']], proj_df])
                 
                 fig2 = px.line(merged, x='date', y='value', color='type', title=f"Proyección a 6 meses: {sel_var_name}")

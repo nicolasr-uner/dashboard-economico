@@ -4,4 +4,6 @@ plotly>=5.18
 httpx>=0.27
 beautifulsoup4>=4.12
 playwright>=1.44
-sqlite3-api; python_version < "3"
+SQLAlchemy>=2.0.0
+psycopg2-binary>=2.9.0
+python-dotenv>=1.0.0
