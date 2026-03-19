@@ -37,19 +37,28 @@ class MacroVariable(Base):
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
+    # ── Nuevos campos v2: conectores y metadata ───────────────────────────
+    connector_type = Column(String(20), default='SCRAPER')   # 'API', 'SCRAPER', 'MANUAL'
+    api_provider = Column(String(50))    # 'banrep', 'banxico', 'bcb', 'fred', 'xm', 'world_bank'
+    api_serie_id = Column(String(200))   # ID de la serie en la API fuente
+    last_successful_fetch = Column(DateTime)
+    fetch_error_count = Column(Integer, default=0)
+    category = Column(String(50), default='macro')  # 'macro', 'energy', 'fiscal', 'external'
+
     country = relationship("Country", back_populates="variables")
     historical_data = relationship("TimeSeriesData", back_populates="variable", cascade="all, delete-orphan")
+    consensus_forecasts = relationship("ConsensusForecast", back_populates="variable")
 
 
 class TimeSeriesData(Base):
     __tablename__ = 'fact_timeseries'
-    
+
     # Llave compuesta para TimescaleDB (Tiempo + Identificadores de metadata)
     date = Column(DateTime, primary_key=True, nullable=False)
     variable_id = Column(Integer, ForeignKey('dim_variable.id'), primary_key=True, nullable=False)
     data_type = Column(Enum(DataTypeEnum), primary_key=True, default=DataTypeEnum.REAL_OFFICIAL)
-    
-    source_id = Column(Integer, nullable=True) # Reservado para Dim_Source
+
+    source_id = Column(Integer, nullable=True)
     value = Column(Float, nullable=False)
     version_timestamp = Column(DateTime, default=datetime.utcnow)
     is_anomaly = Column(Boolean, default=False)
@@ -70,3 +79,19 @@ class AIAnalysisLog(Base):
     risk_level = Column(String(10))
     recommendation = Column(String)
 
+
+class ConsensusForecast(Base):
+    """Proyecciones macroeconómicas de bancos, analistas e instituciones."""
+    __tablename__ = 'dim_consensus_forecast'
+
+    id = Column(Integer, primary_key=True, index=True)
+    variable_id = Column(Integer, ForeignKey('dim_variable.id'), nullable=False)
+    source_institution = Column(String(200), nullable=False)   # 'Bancolombia', 'BanRep', 'Focus BCB', etc.
+    forecast_date = Column(DateTime, nullable=False)            # Fecha en que se publicó la proyección
+    target_date = Column(DateTime, nullable=False)              # Fecha a la que se refiere la proyección
+    forecast_value = Column(Float, nullable=False)
+    scenario = Column(String(20), default='base')              # 'base', 'optimista', 'pesimista'
+    notes = Column(String)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    variable = relationship("MacroVariable", back_populates="consensus_forecasts")
