@@ -101,7 +101,16 @@ def main():
         return
 
     country_opts = dict(zip(countries_df['name'], countries_df['id']))
-    selected_country_name = st.sidebar.selectbox("País principal", options=list(country_opts.keys()))
+    
+    # Forzar Colombia como default preseleccionado
+    colombia_idx = 0
+    country_names = list(country_opts.keys())
+    for i, name in enumerate(country_names):
+        if 'colombia' in name.lower():
+            colombia_idx = i
+            break
+            
+    selected_country_name = st.sidebar.selectbox("País principal", options=country_names, index=colombia_idx)
     selected_country_id = country_opts[selected_country_name]
     variables_df = load_variables(selected_country_id)
 
@@ -124,34 +133,50 @@ def main():
         if variables_df.empty:
             st.info("No hay variables configuradas para este país.")
         else:
-            # Filtro por categoría
-            cats = ['Todas'] + sorted(variables_df['category'].dropna().unique().tolist()) \
-                if 'category' in variables_df.columns else ['Todas']
-            sel_cat = st.selectbox("Filtrar por categoría", cats, key="t1_cat")
+            # Layout Asimétrico 3:1 para la Biblioteca de Referencia
+            col_main, col_ref = st.columns([3, 1], gap="medium")
+            
+            with col_main:
+                # Filtro por categoría
+                cats = ['Todas'] + sorted(variables_df['category'].dropna().unique().tolist()) \
+                    if 'category' in variables_df.columns else ['Todas']
+                sel_cat = st.selectbox("Filtrar por categoría", cats, key="t1_cat")
 
-            filtered_vars = variables_df
-            if sel_cat != 'Todas' and 'category' in variables_df.columns:
-                filtered_vars = variables_df[variables_df['category'] == sel_cat]
+                filtered_vars = variables_df
+                if sel_cat != 'Todas' and 'category' in variables_df.columns:
+                    filtered_vars = variables_df[variables_df['category'] == sel_cat]
 
-            cols = st.columns(min(3, len(filtered_vars)))
-            for idx, (_, row) in enumerate(filtered_vars.iterrows()):
-                hist = load_history(row['id'])
-                col_idx = idx % 3
-                with cols[col_idx]:
-                    render_metric_with_history(row, hist)
+                cols = st.columns(min(3, len(filtered_vars)))
+                for idx, (_, row) in enumerate(filtered_vars.iterrows()):
+                    hist = load_history(row['id'])
+                    col_idx = idx % 3
+                    with cols[col_idx]:
+                        with st.container(border=True):
+                            render_metric_with_history(row, hist)
+                            
+            with col_ref:
+                st.markdown("### 📚 BIBLIOTECA DE DATOS Y REFERENCIAS")
+                st.markdown("<small style='color:gray'>Fuentes oficiales y enlaces directos de los datos mostrados.</small>", unsafe_allow_html=True)
+                st.divider()
+                
+                # Renderizar cita dinámica para las variables de esta categoría
+                for _, row in filtered_vars.iterrows():
+                    source_url = row.get('source_url') or '#'
+                    provider = str(row.get('api_provider') or 'Entidad Oficial').upper()
+                    desc = row.get('description') or row['name']
+                    st.markdown(f"**{row['name']}**<br><small>[Fuente: {provider} - {desc}]({source_url})</small>", unsafe_allow_html=True)
+                    st.divider()
 
-                    # NLA Context
-                    try:
-                        logs = get_ai_logs(row['id'])
-                        if not logs.empty:
-                            last_log = logs.iloc[0]
-                            verdict = str(last_log.get('ai_verdict', '')).upper()
-                            with st.expander(f"Contexto NLA ({verdict})"):
-                                st.write(f"**Justificación:** {last_log.get('justification','')}")
-                                if last_log.get('news_context'):
-                                    st.caption(f"**Contexto Vectorial:**\n{last_log['news_context']}")
-                    except Exception:
-                        pass
+            # Monitor de Noticias Simulado
+            st.markdown("<br>", unsafe_allow_html=True)
+            st.markdown(f"### 📰 MONITOR DE VARIABLES Y NOTICIAS: {selected_country_name.upper()}")
+            
+            news_data = [
+                {"Fecha": "2026-04-08", "Titular": "Entidad oficial reporta sorpresa en desempleo nacional y revisa expectativas", "Variable Afectada": "Desempleo", "Riesgo": "🔴 Alto", "Link": "https://www.dane.gov.co"},
+                {"Fecha": "2026-04-05", "Titular": "Se mantienen las tasas de intervención en la más reciente reunión", "Variable Afectada": "Tasa de Intervención", "Riesgo": "🟢 Bajo", "Link": "https://www.banrep.gov.co"},
+                {"Fecha": "2026-04-01", "Titular": "Acuerdo en el mercado energético afecta el Índice de Contratos", "Variable Afectada": "Índice Mc", "Riesgo": "🟡 Medio", "Link": "https://www.xm.com.co"}
+            ]
+            st.dataframe(pd.DataFrame(news_data), use_container_width=True, hide_index=True)
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 2 — Sector Energético
@@ -280,42 +305,48 @@ def main():
         st.subheader("🌎 Comparativa Macro Regional")
         st.markdown("Cruza y correlaciona el rendimiento de métricas clave a lo largo de América Latina.")
 
-        all_names_df = get_all_variable_names()
-        if all_names_df.empty:
+        all_vars_full = load_all_variables()
+        if all_vars_full.empty:
             st.warning("No hay variables definidas.")
         else:
-            var_names = all_names_df['name'].tolist()
+            # Concept Mapping para unificar métricas internacionalmente
+            COMPARABLE_METRICS = {
+                "Inflación Anual (%)": ["IPC CO (var. anual)", "IPC MX (var. anual)", "IPCA BR (var. anual)", "IPC Ecuador (var. anual)", "CPI USA (var. anual)"],
+                "Crecimiento PIB (Trimestral/Anual)": ["PIB Trimestral CO (var. anual)", "PIB Trimestral MX (var. anual)", "PIB Trimestral BR (var. %)", "PIB Ecuador (USD corrientes)"],
+                "Tasa de Desempleo (%)": ["Desempleo CO", "Desempleo MX", "Desempleo BR"],
+                "Tasa de Política Monetaria (%)": ["Tasa de Intervención BanRep", "Tasa Objetivo Banxico", "Tasa Selic BR", "Fed Funds Rate (USA)"],
+                "Tipo de Cambio (Moneda Local / USD)": ["TRM (COP/USD)", "USD/MXN", "USD/BRL", "EUR/USD"],
+                "Riesgo País (EMBI)": ["EMBI Colombia (Riesgo País)", "EMBI México", "EMBI Brasil"],
+                "Cuenta Corriente (% PIB)": ["Cuenta Corriente CO (% PIB)", "Cuenta Corriente BR (% PIB)", "Cuenta Corriente MX (% PIB)"]
+            }
 
-            # Filtro por categoría
-            all_vars_full = load_all_variables()
-            cat_opts = ['Todas']
-            if not all_vars_full.empty and 'category' in all_vars_full.columns:
-                cat_opts += sorted(all_vars_full['category'].dropna().unique().tolist())
-            sel_cat_comp = st.selectbox("Categoría", cat_opts, key="t3_cat")
+            selected_concept = st.selectbox("Seleccione el Concepto Macroeconómico a cruzar", list(COMPARABLE_METRICS.keys()))
+            names_in_concept = COMPARABLE_METRICS[selected_concept]
+            
+            vars_to_compare = all_vars_full[all_vars_full['name'].isin(names_in_concept)]
 
-            if sel_cat_comp != 'Todas' and not all_vars_full.empty and 'category' in all_vars_full.columns:
-                filtered_names = all_vars_full[all_vars_full['category'] == sel_cat_comp]['name'].unique().tolist()
-                var_names = [n for n in var_names if n in filtered_names]
-
-            if not var_names:
-                st.info("No hay variables en esa categoría.")
-            else:
-                selected_var_name = st.selectbox("Seleccione el Indicador a cruzar", var_names)
-                vars_to_compare = get_variables_by_name(selected_var_name)
-
-                compare_data = []
+            compare_data = []
+            if not vars_to_compare.empty:
+                countries_list = load_countries()
                 for _, v_row in vars_to_compare.iterrows():
                     h_df = load_history(v_row['id'])
                     if not h_df.empty:
                         h_df['value'] = pd.to_numeric(h_df['value'], errors='coerce')
-                        h_df['País'] = v_row['country']
+                        
+                        country_name = "Desconocido"
+                        if not countries_list.empty:
+                            c_match = countries_list[countries_list['id'] == v_row['country_id']]
+                            if not c_match.empty:
+                                country_name = c_match.iloc[0]['name']
+                                
+                        h_df['País'] = country_name
                         compare_data.append(h_df)
 
                 if compare_data:
                     combined_df = pd.concat(compare_data, ignore_index=True)
                     fig_comp = px.line(
                         combined_df, x='date', y='value', color='País', markers=True,
-                        title=f"Evolución Histórica Cruzada: {selected_var_name}"
+                        title=f"Evolución Histórica Cruzada: {selected_concept}"
                     )
                     fig_comp.update_layout(height=420, hovermode="x unified")
                     st.plotly_chart(fig_comp, use_container_width=True)
