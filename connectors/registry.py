@@ -27,11 +27,12 @@ def get_connector_for_variable(variable_row):
         return None, None
 
     CONNECTOR_CLASSES = {
-        'banrep':  _get_banrep,
-        'bcb':     _get_bcb,
-        'banxico': _get_banxico,
-        'fred':    _get_fred,
-        'xm':      _get_xm,
+        'banrep':     _get_banrep,
+        'bcb':        _get_bcb,
+        'banxico':    _get_banxico,
+        'fred':       _get_fred,
+        'xm':         _get_xm,
+        'world_bank': _get_world_bank,
     }
 
     factory = CONNECTOR_CLASSES.get(provider)
@@ -66,3 +67,7 @@ def _get_fred():
 def _get_xm():
     from connectors.xm_energy import XMEnergyConnector
     return XMEnergyConnector()
+
+def _get_world_bank():
+    from connectors.world_bank import WorldBankConnector
+    return WorldBankConnector()

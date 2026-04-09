@@ -16,7 +16,6 @@ st.set_page_config(
     page_title="Cerebro Económico NLA",
     page_icon="🧠",
     layout="wide",
-    initial_sidebar_ebar="expanded" if False else "auto",
     initial_sidebar_state="expanded"
 )
 
