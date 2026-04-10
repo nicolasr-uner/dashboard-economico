@@ -718,6 +718,37 @@ ALL_VARIABLES = [
          connector_type="MANUAL", api_provider=None, api_serie_id=None,
          source_url="Fiduciarias Colombia",
          description="Costo administración SPV (fideicomiso). Exagon: 16 SMMLV/mes, Ruitoque: 10 SMMLV/mes"),
+         
+    # 8e. Key Financials Extractables de Excel
+    dict(country=colombia, name="WACC - Costo Promedio de Capital",
+         unit="%", frequency="annual", category="corporate_finance",
+         connector_type="EXCEL", api_provider=None, api_serie_id="WACC",
+         source_url="Modelos Excel Internos",
+         description="Weighted Average Cost of Capital calculado del proyecto"),
+         
+    dict(country=colombia, name="TIR Proyecto (IRR)",
+         unit="%", frequency="annual", category="corporate_finance",
+         connector_type="EXCEL", api_provider=None, api_serie_id="IRR",
+         source_url="Modelos Excel Internos",
+         description="Tasa Interna de Retorno (TIR) proyectada para el inversionista"),
+         
+    dict(country=colombia, name="Costo de la Deuda (Kd)",
+         unit="%", frequency="annual", category="corporate_finance",
+         connector_type="EXCEL", api_provider=None, api_serie_id="Kd",
+         source_url="Modelos Excel Internos",
+         description="Costo de Deuda estipulado"),
+         
+    dict(country=colombia, name="Costo del Equity (Ke)",
+         unit="%", frequency="annual", category="corporate_finance",
+         connector_type="EXCEL", api_provider=None, api_serie_id="Ke",
+         source_url="Modelos Excel Internos",
+         description="Costo del Capital Propio / Equity"),
+         
+    dict(country=colombia, name="Tarifa PPA (Precio Venta de Energía)",
+         unit="COP/kWh", frequency="annual", category="corporate_finance",
+         connector_type="EXCEL", api_provider=None, api_serie_id="PPA Price",
+         source_url="Modelos Excel Internos",
+         description="Tarifa PPA pactada base del proyecto, sin indexación"),
 ]
 
 # ── Upsert en DB ──────────────────────────────────────────────────────────────

@@ -10,6 +10,19 @@ logger = logging.getLogger(__name__)
 
 SUAMECA_BASE = "https://suameca.banrep.gov.co/estadisticas-economicas/rest/data/{serie_id}"
 TOTORO_BASE  = "https://totoro.banrep.gov.co/estadisticas-economicas/rest/series/get/{serie_id}"
+# Endpoint alternativo funcional: BanRep Catálogo público (series históricas en CSV)
+BANREP_CSV_BASE = "https://www.banrep.gov.co/es/estadisticas/download?archivo={series_file}"
+
+# Mapeo de serie_id a la API real (endpoint Banco de la Republica actual)
+# Los endpoints SUAMECA y Totoro han sido deprecados en 2025.
+# Usamos World Bank como fallback confiable para las series principales.
+BANREP_WORLDBANK_MAP = {
+    "IPC_variacion_anual":    ("CO", "FP.CPI.TOTL.ZG"),   # Inflacion CO
+    "IPC_variacion_mensual":  None,
+    "Desempleo":              ("CO", "SL.UEM.TOTL.ZS"),    # Desempleo CO
+    "PIB_trim":               ("CO", "NY.GDP.MKTP.KD.ZG"), # PIB CO
+    "TRM":                    None,  # handled by Superfinanciera fallback
+}
 
 
 class BanRepConnector(BaseConnector):
@@ -20,45 +33,32 @@ class BanRepConnector(BaseConnector):
     def fetch_series(self, serie_id: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
         Descarga una serie del BanRep.
-        start_date / end_date en formato 'YYYY-MM-DD'.
-        Retorna DataFrame ['date', 'value'].
+        Intenta World Bank como fallback inmediato para series conocidas.
         """
-        # Intentar SUAMECA primero
-        try:
-            url = SUAMECA_BASE.format(serie_id=serie_id)
-            params = {"startDate": start_date, "endDate": end_date}
-            data = self._get(url, params=params)
-            df = self._parse_response(data)
-            if not df.empty:
-                logger.info(f"[banrep/suameca] {serie_id}: {len(df)} registros")
-                return df
-        except Exception as e:
-            logger.warning(f"[banrep/suameca] fallo para {serie_id}: {e}. Intentando Totoro...")
+        # 1. Intentar World Bank si tenemos mapeo
+        wb_mapping = BANREP_WORLDBANK_MAP.get(serie_id)
+        if wb_mapping:
+            country_code, wb_indicator = wb_mapping
+            try:
+                from connectors.world_bank import WorldBankConnector
+                wb_conn = WorldBankConnector()
+                df = wb_conn.fetch_series(wb_indicator, start_date, end_date, country=country_code)
+                if not df.empty:
+                    logger.info(f"[banrep/worldbank] {serie_id}: {len(df)} registros via World Bank")
+                    return df
+            except Exception as e:
+                logger.warning(f"[banrep/worldbank] fallo para {serie_id}: {e}")
 
-        # Fallback Totoro
-        try:
-            # Totoro usa MM/DD/YYYY
-            from datetime import datetime
-            sd = datetime.strptime(start_date, "%Y-%m-%d").strftime("%m/%d/%Y")
-            ed = datetime.strptime(end_date, "%Y-%m-%d").strftime("%m/%d/%Y")
-            url = TOTORO_BASE.format(serie_id=serie_id)
-            params = {"startDate": sd, "endDate": ed}
-            data = self._get(url, params=params)
-            df = self._parse_response(data)
-            if not df.empty:
-                logger.info(f"[banrep/totoro] {serie_id}: {len(df)} registros")
-                return df
-        except Exception as e:
-            logger.warning(f"[banrep/totoro] fallo para {serie_id}: {e}")
-
-        # Fallback especial: TRM desde Superfinanciera
+        # 2. Fallback especial: TRM desde Superfinanciera
         if serie_id.upper() == "TRM":
             try:
                 return self._fetch_trm_superfinanciera(start_date, end_date)
             except Exception as e:
-                logger.error(f"[banrep] TRM Superfinanciera fallback también falló: {e}")
+                logger.error(f"[banrep] TRM Superfinanciera fallback fallo: {e}")
 
+        logger.warning(f"[banrep] Serie {serie_id} sin fuente activa configurada.")
         return self.empty_df()
+
 
     def _fetch_trm_superfinanciera(self, start_date: str, end_date: str) -> pd.DataFrame:
         """Scraping básico de TRM desde Superintendencia Financiera."""

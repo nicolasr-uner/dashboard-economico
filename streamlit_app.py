@@ -115,12 +115,13 @@ def main():
     variables_df = load_variables(selected_country_id)
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab1, tab_energy, tab_comp, tab_proj, tab_data, tab_agent = st.tabs([
+    tab1, tab_energy, tab_comp, tab_proj, tab_data, tab_corp, tab_agent = st.tabs([
         "📊 Vista General",
         "⚡ Sector Energético",
         "🌎 Comparativa Regional",
         "🔮 Proyecciones",
         "📋 Datos y Exportación",
+        "🏢 Finanzas Corporativas",
         "⚙️ Agente de Datos"
     ])
 
@@ -701,6 +702,148 @@ def main():
             st.info("Módulo de consenso no disponible aún.")
         except Exception as e:
             st.error(f"Error guardando proyección: {e}")
+    # ====================================================================
+    # TAB CORP — Finanzas Corporativas
+    # ====================================================================
+    with tab_corp:
+        st.subheader("🏢 Finanzas Corporativas — Modelos Exagon & Ruitoque")
+        st.markdown(
+            "Panel de control financiero extraido automáticamente de los modelos Excel internos. "
+            "Valores de **WACC, Kd, Ke, CAPEX y Tarifa PPA** ingresados como estimaciones 2026."
+        )
+
+        all_corp = load_all_variables()
+        if all_corp.empty:
+            st.info("Carga las variables con `seed_variables_v3.py`.")
+        else:
+            corp_vars = all_corp[all_corp.get('category', pd.Series()) == 'corporate_finance'] \
+                if 'category' in all_corp.columns else pd.DataFrame()
+
+            if corp_vars.empty:
+                st.info("No hay variables de finanzas corporativas. Ejecuta `seed_variables_v3.py`.")
+            else:
+                # --- KPI Panel ---
+                EXCEL_VARS = [
+                    "WACC - Costo Promedio de Capital",
+                    "Costo de la Deuda (Kd)",
+                    "Costo del Equity (Ke)",
+                    "Tarifa PPA (Precio Venta de Energía)",
+                    "TIR Proyecto (IRR)",
+                    "CAPEX Solar Total (USD por proyecto)",
+                ]
+                excel_subset = corp_vars[corp_vars['name'].isin(EXCEL_VARS)]
+
+                st.markdown("#### 📌 Indicadores Clave del Proyecto")
+                kpi_cols = st.columns(3)
+                for ki, (_, row) in enumerate(excel_subset.iterrows()):
+                    h = load_history(row['id'])
+                    with kpi_cols[ki % 3]:
+                        with st.container(border=True):
+                            if not h.empty:
+                                val = h['value'].iloc[-1]
+                                unit = row.get('unit', '')
+                                # Formatear segun tipo
+                                if unit == '%':
+                                    display = f"{val:.2f}%"
+                                elif unit == 'USD':
+                                    display = f"USD {val:,.0f}"
+                                elif unit == 'COP/kWh':
+                                    display = f"{val:.0f} COP/kWh"
+                                else:
+                                    display = f"{val:,.3g} {unit}"
+                                src = row.get('description', '')
+                                st.metric(label=row['name'], value=display)
+                                st.caption(src[:120] if src else "")
+                            else:
+                                st.metric(label=row['name'], value="Sin datos")
+                                st.caption("Ejecuta `scripts/read_excel_models.py` para poblar.")
+
+                st.divider()
+
+                # --- Grafico WACC Waterfall ---
+                st.markdown("#### 📉 Estructura del WACC")
+                wacc_row = corp_vars[corp_vars['name'] == "WACC - Costo Promedio de Capital"]
+                kd_row   = corp_vars[corp_vars['name'] == "Costo de la Deuda (Kd)"]
+                ke_row   = corp_vars[corp_vars['name'] == "Costo del Equity (Ke)"]
+
+                wacc_vals = {}
+                for label, row_df in [("Kd (Deuda)", kd_row), ("Ke (Equity)", ke_row), ("WACC", wacc_row)]:
+                    if not row_df.empty:
+                        h = load_history(int(row_df.iloc[0]['id']))
+                        if not h.empty:
+                            wacc_vals[label] = h['value'].iloc[-1]
+
+                if wacc_vals:
+                    fig_w = go.Figure(go.Bar(
+                        x=list(wacc_vals.keys()),
+                        y=list(wacc_vals.values()),
+                        marker_color=['#6366f1', '#f59e0b', '#10b981'],
+                        text=[f"{v:.2f}%" for v in wacc_vals.values()],
+                        textposition='outside'
+                    ))
+                    fig_w.update_layout(
+                        title="WACC vs Componentes de Capital (%)",
+                        yaxis_title="%", height=320,
+                        plot_bgcolor='rgba(0,0,0,0)'
+                    )
+                    st.plotly_chart(fig_w, use_container_width=True)
+                else:
+                    st.info("Pobla datos con `scripts/read_excel_models.py` para ver el gráfico WACC.")
+
+                st.divider()
+
+                # --- Sensibilidad PPA vs Inflacion ---
+                st.markdown("#### 📊 Sensibilidad PPA vs Indexador IPP")
+                ppa_row = corp_vars[corp_vars['name'] == "Tarifa PPA (Precio Venta de Energía)"]
+                ipp_row = all_corp[all_corp['name'] == "IPP CO (var. anual)"]
+
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    if not ppa_row.empty:
+                        h_ppa = load_history(int(ppa_row.iloc[0]['id']))
+                        ppa_base = h_ppa['value'].iloc[-1] if not h_ppa.empty else 300
+                    else:
+                        ppa_base = 300
+                    st.metric("PPA Base (COP/kWh)", f"{ppa_base:.0f}")
+
+                with col_s2:
+                    if not ipp_row.empty:
+                        h_ipp = load_history(int(ipp_row.iloc[0]['id']))
+                        ipp_val = h_ipp['value'].iloc[-1] if not h_ipp.empty else 4.4
+                    else:
+                        ipp_val = 4.4
+                    st.metric("IPP CO Reciente (%)", f"{ipp_val:.2f}%")
+
+                # Tabla de sensibilidad
+                ipp_scenarios = [2.0, 3.0, 4.0, 5.0, 6.0, 7.0]
+                years = [1, 2, 3, 5, 10]
+                sens_data = {}
+                for yr in years:
+                    row_sens = {}
+                    for ipp in ipp_scenarios:
+                        ppa_proj = ppa_base * ((1 + ipp / 100) ** yr)
+                        row_sens[f"IPP {ipp:.0f}%"] = round(ppa_proj, 1)
+                    sens_data[f"Año {yr}"] = row_sens
+
+                sens_df = pd.DataFrame(sens_data).T
+                st.caption(f"Proyección PPA (COP/kWh) indexado a IPP, base {ppa_base:.0f} COP/kWh")
+                st.dataframe(sens_df.style.highlight_max(axis=0, color='#d1fae5')
+                                         .highlight_min(axis=0, color='#fee2e2'),
+                             use_container_width=True)
+
+                st.divider()
+
+                # --- Resto de variables corporativas ---
+                st.markdown("#### 🗒 Todas las Variables Corporativas")
+                other_corp = corp_vars[~corp_vars['name'].isin(EXCEL_VARS)]
+                if not other_corp.empty:
+                    c1, c2, c3 = st.columns(3)
+                    cols3 = [c1, c2, c3]
+                    for ci, (_, row) in enumerate(other_corp.iterrows()):
+                        h = load_history(row['id'])
+                        with cols3[ci % 3]:
+                            with st.container(border=True):
+                                render_metric_with_history(row, h)
 
 
 if __name__ == "__main__":
