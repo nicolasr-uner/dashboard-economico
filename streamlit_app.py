@@ -108,7 +108,7 @@ def _metric_caption(var_name: str) -> str:
     return ""
 
 
-def render_metric_with_history(row, hist):
+def render_metric_with_history(row, hist, key_prefix="chart"):
     """Renderiza métrica + minichart en columna (Bloomberg-style)."""
     unit = row.get('unit', '') or ''
     if not hist.empty:
@@ -135,7 +135,21 @@ def render_metric_with_history(row, hist):
             line_color='#3b82f6', line_width=2,
             hovertemplate=f"%{{x|%d %b %Y}}<br>%{{y:,.4g}} {unit}<extra></extra>"
         )
-        st.plotly_chart(fig, width='stretch', key=f"metric_chart_{row['id']}")
+        source_url = row.get('source_url') or ''
+        provider = str(row.get('api_provider') or row.get('connector_type') or 'Fuente oficial').upper()
+        if source_url and source_url != '#':
+            annotation_text = f"Fuente: {provider} — <a href='{source_url}'>{source_url[:60]}</a>"
+        else:
+            annotation_text = f"Fuente: {provider}"
+        fig.add_annotation(
+            text=annotation_text,
+            xref="paper", yref="paper",
+            x=0, y=-0.35, showarrow=False,
+            font=dict(size=9, color="#6b7280"),
+            xanchor="left", align="left"
+        )
+        fig.update_layout(margin=dict(l=0, r=0, t=5, b=40))
+        st.plotly_chart(fig, width='stretch', key=f"{key_prefix}_{row['id']}")
     else:
         lkg = load_last_known(row['id'])
         if lkg:
@@ -228,11 +242,27 @@ def main():
         "Puede existir rezago en la publicación. Ley 1581/2012."
     )
 
+    # ── Biblioteca de Datos ───────────────────────────────────────────────────
+    st.sidebar.divider()
+    with st.sidebar.expander("📚 Biblioteca de Datos", expanded=False):
+        st.markdown("<small style='color:gray'>Fuentes oficiales y enlaces directos.</small>", unsafe_allow_html=True)
+        lib_vars = variables_df  # already loaded
+        for _, lib_row in lib_vars.iterrows():
+            source_url = lib_row.get('source_url') or '#'
+            provider = str(lib_row.get('api_provider') or 'Entidad Oficial').upper()
+            desc = lib_row.get('description') or lib_row['name']
+            st.markdown(f"**{lib_row['name']}**")
+            if source_url and source_url != '#':
+                st.markdown(f"[{provider} — {desc[:80]}]({source_url})", unsafe_allow_html=False)
+            else:
+                st.caption(f"{provider} — {desc[:80]}")
+            st.divider()
+
     # ── Tabs ─────────────────────────────────────────────────────────────────
     tab1, tab_energy, tab_comp, tab_proj, tab_data, tab_corp, tab_agent = st.tabs([
         "📊 Vista General",
         "⚡ Sector Energético",
-        "🌎 Comparativa Regional",
+        "🌎 América Latina",
         "🔮 Proyecciones",
         "📋 Datos y Exportación",
         "🏢 Finanzas Corporativas",
@@ -248,72 +278,57 @@ def main():
         if variables_df.empty:
             st.info("No hay variables configuradas para este país.")
         else:
-            # Layout Asimétrico 3:1 para la Biblioteca de Referencia
-            col_main, col_ref = st.columns([3, 1], gap="medium")
-            
-            with col_main:
-                # Filtro por categoría
-                cats = ['Todas'] + sorted(variables_df['category'].dropna().unique().tolist()) \
-                    if 'category' in variables_df.columns else ['Todas']
-                sel_cat = st.selectbox("Filtrar por categoría", cats, key="t1_cat")
+            st.caption("💡 Usa el selector de país en el panel lateral para cambiar el país visualizado.")
 
-                filtered_vars = variables_df if sel_cat == 'Todas' else \
-                    variables_df[variables_df['category'] == sel_cat] \
-                    if 'category' in variables_df.columns else variables_df
+            # Filtro por categoría
+            cats = ['Todas'] + sorted(variables_df['category'].dropna().unique().tolist()) \
+                if 'category' in variables_df.columns else ['Todas']
+            sel_cat = st.selectbox("Filtrar por categoría", cats, key="t1_cat")
 
-                # Secciones temáticas cuando se muestran todas las categorías
-                _SECTIONS = {
-                    "🌐 Sector Externo": ['external', 'fx_rates'],
-                    "📈 Inflación y Tasas": ['prices_inflation', 'rates_monetary', 'macro'],
-                    "🏭 Actividad Económica": ['gdp_activity'],
-                }
+            filtered_vars = variables_df if sel_cat == 'Todas' else \
+                variables_df[variables_df['category'] == sel_cat] \
+                if 'category' in variables_df.columns else variables_df
 
-                if sel_cat == 'Todas' and 'category' in variables_df.columns:
-                    _mapped_cats = [c for cats_list in _SECTIONS.values() for c in cats_list]
-                    for section_title, section_cats in _SECTIONS.items():
-                        sec_vars = variables_df[variables_df['category'].isin(section_cats)]
-                        if sec_vars.empty:
-                            continue
-                        st.subheader(section_title)
-                        cols = st.columns(min(3, len(sec_vars)))
-                        for idx, (_, row) in enumerate(sec_vars.iterrows()):
-                            hist = load_history(row['id'])
-                            with cols[idx % 3]:
-                                with st.container(border=True):
-                                    render_metric_with_history(row, hist)
-                    # Indicadores que no encajan en las secciones anteriores
-                    other_vars = variables_df[~variables_df['category'].isin(_mapped_cats)]
-                    if not other_vars.empty:
-                        st.subheader("📌 Otros Indicadores")
-                        cols = st.columns(min(3, len(other_vars)))
-                        for idx, (_, row) in enumerate(other_vars.iterrows()):
-                            hist = load_history(row['id'])
-                            with cols[idx % 3]:
-                                with st.container(border=True):
-                                    render_metric_with_history(row, hist)
+            # Secciones temáticas cuando se muestran todas las categorías
+            _SECTIONS = {
+                "🌐 Sector Externo": ['external', 'fx_rates'],
+                "📈 Inflación y Tasas": ['prices_inflation', 'rates_monetary', 'macro'],
+                "🏭 Actividad Económica": ['gdp_activity'],
+            }
+
+            if sel_cat == 'Todas' and 'category' in variables_df.columns:
+                _mapped_cats = [c for cats_list in _SECTIONS.values() for c in cats_list]
+                for section_title, section_cats in _SECTIONS.items():
+                    sec_vars = variables_df[variables_df['category'].isin(section_cats)]
+                    if sec_vars.empty:
+                        continue
+                    st.subheader(section_title)
+                    cols = st.columns(min(3, len(sec_vars)))
+                    for idx, (_, row) in enumerate(sec_vars.iterrows()):
+                        hist = load_history(row['id'])
+                        with cols[idx % 3]:
+                            with st.container(border=True):
+                                render_metric_with_history(row, hist, key_prefix="t1_sec")
+                # Indicadores que no encajan en las secciones anteriores
+                other_vars = variables_df[~variables_df['category'].isin(_mapped_cats)]
+                if not other_vars.empty:
+                    st.subheader("📌 Otros Indicadores")
+                    cols = st.columns(min(3, len(other_vars)))
+                    for idx, (_, row) in enumerate(other_vars.iterrows()):
+                        hist = load_history(row['id'])
+                        with cols[idx % 3]:
+                            with st.container(border=True):
+                                render_metric_with_history(row, hist, key_prefix="t1_oth")
+            else:
+                if len(filtered_vars) > 0:
+                    cols = st.columns(min(3, len(filtered_vars)))
+                    for idx, (_, row) in enumerate(filtered_vars.iterrows()):
+                        hist = load_history(row['id'])
+                        with cols[idx % 3]:
+                            with st.container(border=True):
+                                render_metric_with_history(row, hist, key_prefix="t1_flt")
                 else:
-                    if len(filtered_vars) > 0:
-                        cols = st.columns(min(3, len(filtered_vars)))
-                        for idx, (_, row) in enumerate(filtered_vars.iterrows()):
-                            hist = load_history(row['id'])
-                            with cols[idx % 3]:
-                                with st.container(border=True):
-                                    render_metric_with_history(row, hist)
-                    else:
-                        st.info("No hay variables en esta categoría.")
-                            
-            with col_ref:
-                st.markdown("### 📚 BIBLIOTECA DE DATOS Y REFERENCIAS")
-                st.markdown("<small style='color:gray'>Fuentes oficiales y enlaces directos de los datos mostrados.</small>", unsafe_allow_html=True)
-                st.divider()
-                
-                # Renderizar cita dinámica para las variables de esta categoría
-                for _, row in filtered_vars.iterrows():
-                    source_url = row.get('source_url') or '#'
-                    provider = str(row.get('api_provider') or 'Entidad Oficial').upper()
-                    desc = row.get('description') or row['name']
-                    st.markdown(f"**{row['name']}**<br><small>[Fuente: {provider} - {desc}]({source_url})</small>", unsafe_allow_html=True)
-                    st.divider()
+                    st.info("No hay variables en esta categoría.")
 
             # Monitor de Noticias Simulado
             st.markdown("<br>", unsafe_allow_html=True)
@@ -331,13 +346,41 @@ def main():
     # ════════════════════════════════════════════════════════════════════════
     with tab_energy:
         st.subheader("⚡ Sector Energético")
-        st.markdown("Variables del mercado eléctrico mayorista de Colombia y commodities energéticos globales.")
+        st.markdown(f"Variables del mercado energético de **{selected_country_name}** y commodities globales.")
 
         all_vars = load_all_variables()
         if all_vars.empty or 'category' not in all_vars.columns:
             st.info("Variables de energía pendientes de carga. Ejecute el agente de datos o el backfill.")
         else:
             energy_vars = all_vars[all_vars['category'] == 'energy']
+
+            # Contexto según país seleccionado
+            COUNTRY_ENERGY_CONTEXT = {
+                "Colombia": {
+                    "operator": "XM — Mercado Eléctrico Mayorista",
+                    "note": "Precio de Bolsa, Índice Mc, Aportes Hídricos, Cargo por Confiabilidad.",
+                    "key_vars": ["Bolsa", "Mc", "Aporte", "Escasez", "CERE"]
+                },
+                "Ecuador": {
+                    "operator": "CENACE — Centro Nacional de Control de Energía",
+                    "note": "Ecuador opera con despacho centralizado. No existe mercado spot/bolsa como Colombia. La tarifa la fija ARCERNNR. Aproximadamente 70% de generación es hidráulica.",
+                    "key_vars": ["Hidro", "Solar", "Capacidad"]
+                },
+                "Brasil": {
+                    "operator": "ONS / CCEE — Operador Nacional do Sistema / Câmara de Comercialização",
+                    "note": "PLD (Preço de Liquidação das Diferenças) equivale al Precio de Bolsa colombiano. Reservatórios de embalses son el indicador crítico.",
+                    "key_vars": ["Solar", "Capacidad"]
+                },
+                "México": {
+                    "operator": "CENACE México — Centro Nacional de Control de Energía",
+                    "note": "Precio Marginal Local (PML) es el equivalente al Precio de Bolsa. Mercado liberalizado desde reforma 2013.",
+                    "key_vars": ["Solar", "Capacidad"]
+                }
+            }
+            ctx = COUNTRY_ENERGY_CONTEXT.get(selected_country_name, {})
+            if ctx:
+                st.info(f"**{ctx['operator']}** — {ctx['note']}")
+
             if energy_vars.empty:
                 st.info(
                     "Variables de energía pendientes de carga. "
@@ -453,6 +496,7 @@ def main():
     with tab_comp:
         st.subheader("🌎 Comparativa Macro Regional")
         st.markdown("Cruza y correlaciona el rendimiento de métricas clave a lo largo de América Latina.")
+        st.info("🌎 Esta vista muestra **todos los países (CO, MX, BR, EC)** simultáneamente, independientemente del país seleccionado en el filtro lateral.")
 
         all_vars_full = load_all_variables()
         if all_vars_full.empty:
@@ -996,7 +1040,7 @@ def main():
                         h = load_history(row['id'])
                         with cols3[ci % 3]:
                             with st.container(border=True):
-                                render_metric_with_history(row, h)
+                                render_metric_with_history(row, h, key_prefix="t6_corp")
 
 
 if __name__ == "__main__":
