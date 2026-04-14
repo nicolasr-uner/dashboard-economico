@@ -52,6 +52,25 @@ def get_historical_data(variable_id: int) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def get_last_known_value(variable_id: int) -> dict | None:
+    """Devuelve el dato más reciente disponible, sin filtro de fechas. Usado como fallback."""
+    query = text(
+        "SELECT value, date FROM fact_timeseries "
+        "WHERE variable_id = :variable_id ORDER BY date DESC LIMIT 1;"
+    )
+    try:
+        with engine.connect() as conn:
+            df = pd.read_sql(query, conn, params={"variable_id": variable_id})
+        if not df.empty:
+            return {
+                'value': float(df.iloc[0]['value']),
+                'date': pd.to_datetime(df.iloc[0]['date'])
+            }
+    except Exception:
+        pass
+    return None
+
+
 def save_historical_data(variable_id: int, value: float, date_str: str, data_type: str = 'REAL_OFFICIAL') -> bool:
     """Guarda un nuevo registro histórico. Compatible con SQLite y PostgreSQL+TimescaleDB."""
     try:

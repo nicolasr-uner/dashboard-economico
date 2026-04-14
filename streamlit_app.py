@@ -7,7 +7,8 @@ import io
 
 from data.database import (
     get_countries, get_variables, get_historical_data,
-    get_ai_logs, get_all_variable_names, get_variables_by_name
+    get_ai_logs, get_all_variable_names, get_variables_by_name,
+    get_last_known_value
 )
 from data.agent import VariableAgent
 
@@ -33,21 +34,25 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Cachés ───────────────────────────────────────────────────────────────────
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)
 def load_countries():
     return get_countries()
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)
 def load_variables(country_id=None):
     return get_variables(country_id)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)
 def load_history(variable_id):
     return get_historical_data(variable_id)
 
-@st.cache_data(ttl=600)
+@st.cache_data(ttl=3600)
 def load_all_variables():
     return get_variables()
+
+@st.cache_data(ttl=3600)
+def load_last_known(variable_id):
+    return get_last_known_value(variable_id)
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def badge_html(connector_type: str) -> str:
@@ -56,8 +61,55 @@ def badge_html(connector_type: str) -> str:
     return f'<span class="{cls}">{ct}</span>'
 
 
+# ── Formateo numérico universal ───────────────────────────────────────────────
+_MONETARY_UNITS = {
+    'COP', 'COP/USD', 'USD', 'COP/kWh', 'USD/bbl', 'USD/MMBtu',
+    'USD M', 'USD/MWh', 'COP B', 'BRL/USD', 'MXN/USD', 'EUR/USD', 'COP/kWp'
+}
+_PERCENT_UNITS = {'%', '% PIB'}
+
+
+def format_number(value, unit: str = '') -> str:
+    """Formato institucional: elimina notación científica."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "N/A"
+    u = (unit or '').strip()
+    if u in _MONETARY_UNITS:
+        return f"{value:,.2f}"
+    if u in _PERCENT_UNITS or u.endswith('%'):
+        return f"{value:.2f}"
+    if abs(value) >= 1_000:
+        return f"{value:,.2f}"
+    if abs(value) >= 1:
+        return f"{value:.4f}"
+    return f"{value:.6f}"
+
+
+# ── Captions por indicador ────────────────────────────────────────────────────
+_METRIC_CAPTIONS = {
+    'TRM':                  "Tasa Representativa del Mercado: precio oficial COP por 1 USD (BanRep).",
+    'IPC':                  "Índice de Precios al Consumidor: variación % anual de la inflación (DANE).",
+    'IBR':                  "Indicador Bancario de Referencia: costo del dinero entre bancos colombianos.",
+    'PIB':                  "Producto Interno Bruto: crecimiento % del valor agregado de la economía.",
+    'Desempleo':            "Tasa de desempleo: % de la PEA sin empleo (DANE).",
+    'Tasa de Intervención': "Tasa de política monetaria del Banco de la República.",
+    'DTF':                  "Depósito a Término Fijo a 90 días; referencia del costo del crédito.",
+    'EMBI':                 "Spread sobre US Treasuries que refleja el riesgo soberano del país.",
+    'WTI':                  "West Texas Intermediate: precio de referencia del petróleo crudo (USD/barril).",
+    'WACC':                 "Costo promedio ponderado del capital del proyecto.",
+}
+
+
+def _metric_caption(var_name: str) -> str:
+    for kw, cap in _METRIC_CAPTIONS.items():
+        if kw.lower() in var_name.lower():
+            return cap
+    return ""
+
+
 def render_metric_with_history(row, hist):
-    """Renderiza métrica + minichart en columna."""
+    """Renderiza métrica + minichart en columna (Bloomberg-style)."""
+    unit = row.get('unit', '') or ''
     if not hist.empty:
         last_val = hist['value'].iloc[-1]
         prev_val = hist['value'].iloc[-2] if len(hist) > 1 else last_val
@@ -65,19 +117,35 @@ def render_metric_with_history(row, hist):
         ct = row.get('connector_type', 'SCRAPER') if hasattr(row, 'get') else 'SCRAPER'
         st.markdown(badge_html(ct), unsafe_allow_html=True)
         st.metric(
-            label=f"{row['name']} ({row.get('unit','') or ''})",
-            value=f"{last_val:,.3g}",
+            label=f"{row['name']} ({unit})",
+            value=format_number(last_val, unit),
             delta=f"{delta}%"
         )
-        fig = px.line(hist, x='date', y='value')
+        cap = _metric_caption(row['name'])
+        if cap:
+            st.caption(cap)
+        fig = px.line(hist, x='date', y='value',
+                      labels={'value': unit, 'date': 'Fecha'})
         fig.update_layout(height=150, margin=dict(l=0, r=0, t=5, b=0),
                           showlegend=False,
                           xaxis=dict(showticklabels=False, showgrid=False),
-                          yaxis=dict(showticklabels=True, showgrid=True))
-        fig.update_traces(line_color='#3b82f6', line_width=2)
+                          yaxis=dict(showticklabels=True, showgrid=True, title=unit))
+        fig.update_traces(
+            line_color='#3b82f6', line_width=2,
+            hovertemplate=f"%{{x|%d %b %Y}}<br>%{{y:,.4g}} {unit}<extra></extra>"
+        )
         st.plotly_chart(fig, use_container_width=True)
     else:
-        st.metric(label=f"{row['name']}", value="Sin datos")
+        lkg = load_last_known(row['id'])
+        if lkg:
+            date_label = lkg['date'].strftime('%d %b %Y')
+            st.metric(
+                label=f"{row['name']} ({unit})",
+                value=format_number(lkg['value'], unit)
+            )
+            st.caption(f"Dato histórico: {date_label}")
+        else:
+            st.metric(label=f"{row['name']}", value="Sin datos")
 
 
 # ── Función principal ─────────────────────────────────────────────────────────
@@ -101,7 +169,7 @@ def main():
         return
 
     country_opts = dict(zip(countries_df['name'], countries_df['id']))
-    
+
     # Forzar Colombia como default preseleccionado
     colombia_idx = 0
     country_names = list(country_opts.keys())
@@ -109,10 +177,33 @@ def main():
         if 'colombia' in name.lower():
             colombia_idx = i
             break
-            
-    selected_country_name = st.sidebar.selectbox("País principal", options=country_names, index=colombia_idx)
+
+    # ── Sync URL → sidebar (Query Params) ────────────────────────────────────
+    _qp_country = st.query_params.get("pais", None)
+    if _qp_country:
+        for i, name in enumerate(country_names):
+            if name.lower() == _qp_country.lower():
+                colombia_idx = i
+                break
+
+    selected_country_name = st.sidebar.selectbox(
+        "País principal", options=country_names, index=colombia_idx
+    )
     selected_country_id = country_opts[selected_country_name]
+    # ── Sync sidebar → URL ────────────────────────────────────────────────────
+    st.query_params["pais"] = selected_country_name
+
     variables_df = load_variables(selected_country_id)
+
+    # ── Aviso Legal ───────────────────────────────────────────────────────────
+    st.sidebar.divider()
+    st.sidebar.warning(
+        "**Aviso Legal:** La información presentada tiene carácter meramente informativo "
+        "y no constituye asesoría de inversión ni recomendación financiera. "
+        "Las proyecciones son estimaciones estadísticas y no garantizan resultados futuros. "
+        "Datos capturados de fuentes públicas: BanRep, DANE, XM, FRED, BCB, Banxico. "
+        "Puede existir rezago en la publicación. Ley 1581/2012."
+    )
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
     tab1, tab_energy, tab_comp, tab_proj, tab_data, tab_corp, tab_agent = st.tabs([
@@ -143,17 +234,50 @@ def main():
                     if 'category' in variables_df.columns else ['Todas']
                 sel_cat = st.selectbox("Filtrar por categoría", cats, key="t1_cat")
 
-                filtered_vars = variables_df
-                if sel_cat != 'Todas' and 'category' in variables_df.columns:
-                    filtered_vars = variables_df[variables_df['category'] == sel_cat]
+                filtered_vars = variables_df if sel_cat == 'Todas' else \
+                    variables_df[variables_df['category'] == sel_cat] \
+                    if 'category' in variables_df.columns else variables_df
 
-                cols = st.columns(min(3, len(filtered_vars)))
-                for idx, (_, row) in enumerate(filtered_vars.iterrows()):
-                    hist = load_history(row['id'])
-                    col_idx = idx % 3
-                    with cols[col_idx]:
-                        with st.container(border=True):
-                            render_metric_with_history(row, hist)
+                # Secciones temáticas cuando se muestran todas las categorías
+                _SECTIONS = {
+                    "🌐 Sector Externo": ['external', 'fx_rates'],
+                    "📈 Inflación y Tasas": ['prices_inflation', 'rates_monetary', 'macro'],
+                    "🏭 Actividad Económica": ['gdp_activity'],
+                }
+
+                if sel_cat == 'Todas' and 'category' in variables_df.columns:
+                    _mapped_cats = [c for cats_list in _SECTIONS.values() for c in cats_list]
+                    for section_title, section_cats in _SECTIONS.items():
+                        sec_vars = variables_df[variables_df['category'].isin(section_cats)]
+                        if sec_vars.empty:
+                            continue
+                        st.subheader(section_title)
+                        cols = st.columns(min(3, len(sec_vars)))
+                        for idx, (_, row) in enumerate(sec_vars.iterrows()):
+                            hist = load_history(row['id'])
+                            with cols[idx % 3]:
+                                with st.container(border=True):
+                                    render_metric_with_history(row, hist)
+                    # Indicadores que no encajan en las secciones anteriores
+                    other_vars = variables_df[~variables_df['category'].isin(_mapped_cats)]
+                    if not other_vars.empty:
+                        st.subheader("📌 Otros Indicadores")
+                        cols = st.columns(min(3, len(other_vars)))
+                        for idx, (_, row) in enumerate(other_vars.iterrows()):
+                            hist = load_history(row['id'])
+                            with cols[idx % 3]:
+                                with st.container(border=True):
+                                    render_metric_with_history(row, hist)
+                else:
+                    if len(filtered_vars) > 0:
+                        cols = st.columns(min(3, len(filtered_vars)))
+                        for idx, (_, row) in enumerate(filtered_vars.iterrows()):
+                            hist = load_history(row['id'])
+                            with cols[idx % 3]:
+                                with st.container(border=True):
+                                    render_metric_with_history(row, hist)
+                    else:
+                        st.info("No hay variables en esta categoría.")
                             
             with col_ref:
                 st.markdown("### 📚 BIBLIOTECA DE DATOS Y REFERENCIAS")
@@ -219,7 +343,7 @@ def main():
                         delta = round(((last_val - prev_val) / prev_val * 100), 2) if prev_val != 0 else 0
                         kpi_cols[ki % 4].metric(
                             label=f"{vname} ({vinfo['unit']})",
-                            value=f"{last_val:,.3g}",
+                            value=format_number(last_val, vinfo['unit']),
                             delta=f"{delta}%"
                         )
 
@@ -360,7 +484,7 @@ def main():
                         current_val = df_c.iloc[-1]['value']
                         prev_val = df_c.iloc[-2]['value'] if len(df_c) > 1 else current_val
                         delta_comp = round(((current_val - prev_val) / prev_val * 100), 2) if prev_val != 0 else 0
-                        cols_comp[i].metric(label=country, value=f"{current_val:,.3g}", delta=f"{delta_comp}%")
+                        cols_comp[i].metric(label=country, value=format_number(current_val), delta=f"{delta_comp}%")
                 else:
                     st.info("No hay datos históricos para comparar este indicador.")
 
@@ -419,16 +543,21 @@ def main():
                         name='Histórico', line=dict(color='#1e3a8a', width=2)
                     ))
                     # Proyección
+                    _model_label = proj_result['model_name'].iloc[0] \
+                        if 'model_name' in proj_result.columns else 'Ensemble'
                     fig_proj.add_trace(go.Scatter(
                         x=proj_result['date'], y=proj_result['value'],
-                        name=f"Proyección ({proj_result.get('model_name', ['Ensemble']).iloc[0] if 'model_name' in proj_result.columns else 'Ensemble'})",
+                        name=f"Proyección ({_model_label})",
                         line=dict(color='#f59e0b', width=2, dash='dot'),
                         mode='lines+markers'
                     ))
 
+                    _sel_unit = variables_df[variables_df['id'] == sel_var_id]['unit'].values
+                    _sel_unit = _sel_unit[0] if len(_sel_unit) > 0 else ''
                     fig_proj.update_layout(
                         height=420, hovermode='x unified',
-                        title=f"Proyección a 6 meses: {sel_var_name}",
+                        title=f"Proyección a 6 meses: {sel_var_name} ({_sel_unit})",
+                        yaxis_title=_sel_unit,
                         legend=dict(orientation='h', y=1.12)
                     )
                     st.plotly_chart(fig_proj, use_container_width=True)
