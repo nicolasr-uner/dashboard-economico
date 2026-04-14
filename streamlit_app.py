@@ -135,7 +135,7 @@ def render_metric_with_history(row, hist):
             line_color='#3b82f6', line_width=2,
             hovertemplate=f"%{{x|%d %b %Y}}<br>%{{y:,.4g}} {unit}<extra></extra>"
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch', key=f"metric_chart_{row['id']}")
     else:
         lkg = load_last_known(row['id'])
         if lkg:
@@ -392,18 +392,19 @@ def main():
                         fig_bm.update_layout(height=300, hovermode='x unified',
                                              yaxis_title="COP/kWh",
                                              legend=dict(orientation='h', y=1.1))
-                        st.plotly_chart(fig_bm, use_container_width=True)
+                        st.plotly_chart(fig_bm, width='stretch', key="energy_bolsa_mc")
 
                     # Demanda y Solar
                     for label, keywords in [("Demanda Nacional", ['Demanda', 'DemaNal']),
                                             ("Generación Solar", ['Solar', 'Gene'])]:
-                        key = next((k for k in energy_data for kw in keywords if kw.lower() in k.lower()), None)
-                        if key:
+                        ekey = next((k for k in energy_data for kw in keywords if kw.lower() in k.lower()), None)
+                        if ekey:
                             st.markdown(f"#### {label}")
-                            fig_e = px.area(energy_data[key]['df'], x='date', y='value',
-                                            title=f"{key} ({energy_data[key]['unit']})")
+                            fig_e = px.area(energy_data[ekey]['df'], x='date', y='value',
+                                            title=f"{ekey} ({energy_data[ekey]['unit']})")
                             fig_e.update_layout(height=250)
-                            st.plotly_chart(fig_e, use_container_width=True)
+                            chart_key = f"energy_{label.lower().replace(' ', '_')}"
+                            st.plotly_chart(fig_e, width='stretch', key=chart_key)
 
                     # Aportes Hídricos
                     aporte_key = next((k for k in energy_data if 'Aporte' in k or 'Hídr' in k), None)
@@ -420,7 +421,7 @@ def main():
                         fig_ap.add_hline(y=100, line_dash="dash", line_color="gray",
                                          annotation_text="Media histórica")
                         fig_ap.update_layout(height=250)
-                        st.plotly_chart(fig_ap, use_container_width=True)
+                        st.plotly_chart(fig_ap, width='stretch', key="energy_aportes_hidricos")
 
                     # WTI y Henry Hub
                     wti_key = next((k for k in energy_data if 'WTI' in k or 'Crude' in k), None)
@@ -444,7 +445,7 @@ def main():
                             fig_c.update_layout(yaxis2=dict(overlaying='y', side='right'))
                         fig_c.update_layout(height=280, hovermode='x unified',
                                             legend=dict(orientation='h', y=1.1))
-                        st.plotly_chart(fig_c, use_container_width=True)
+                        st.plotly_chart(fig_c, width='stretch', key="energy_commodities")
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 3 — Comparativa Regional
@@ -497,7 +498,7 @@ def main():
                         title=f"Evolución Histórica Cruzada: {selected_concept}"
                     )
                     fig_comp.update_layout(height=420, hovermode="x unified")
-                    st.plotly_chart(fig_comp, use_container_width=True)
+                    st.plotly_chart(fig_comp, width='stretch', key="regional_comparison")
 
                     st.divider()
                     st.subheader("📊 Ranking — Último Dato")
@@ -583,7 +584,7 @@ def main():
                         yaxis_title=_sel_unit,
                         legend=dict(orientation='h', y=1.12)
                     )
-                    st.plotly_chart(fig_proj, use_container_width=True)
+                    st.plotly_chart(fig_proj, width='stretch', key="projection_chart")
                     st.dataframe(proj_result[['date', 'value']].round(4), use_container_width=True)
                 else:
                     st.warning("Proyección no disponible.")
@@ -938,7 +939,7 @@ def main():
                         yaxis_title="%", height=320,
                         plot_bgcolor='rgba(0,0,0,0)'
                     )
-                    st.plotly_chart(fig_w, use_container_width=True)
+                    st.plotly_chart(fig_w, width='stretch', key="corp_wacc_chart")
                 else:
                     st.info("Pobla datos con `scripts/read_excel_models.py` para ver el gráfico WACC.")
 
