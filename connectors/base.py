@@ -41,6 +41,10 @@ class BaseConnector(abc.ABC):
                 response.raise_for_status()
                 return response.json()
             except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                # No reintentar en errores de cliente (4xx) — son definitivos
+                if isinstance(e, httpx.HTTPStatusError) and 400 <= e.response.status_code < 500:
+                    logger.warning(f"[{self.provider_name}] error cliente {e.response.status_code} en {url} — sin retry")
+                    raise
                 wait = 2 ** attempt
                 logger.warning(f"[{self.provider_name}] intento {attempt}/{self.MAX_RETRIES} falló: {e}. "
                                 f"Reintentando en {wait}s...")
@@ -62,6 +66,10 @@ class BaseConnector(abc.ABC):
                 response.raise_for_status()
                 return response.json()
             except (httpx.HTTPStatusError, httpx.RequestError) as e:
+                # No reintentar en errores de cliente (4xx) — son definitivos
+                if isinstance(e, httpx.HTTPStatusError) and 400 <= e.response.status_code < 500:
+                    logger.warning(f"[{self.provider_name}] POST error cliente {e.response.status_code} — sin retry")
+                    raise
                 wait = 2 ** attempt
                 logger.warning(f"[{self.provider_name}] POST intento {attempt}/{self.MAX_RETRIES} falló: {e}. "
                                 f"Reintentando en {wait}s...")

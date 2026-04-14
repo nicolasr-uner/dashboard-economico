@@ -17,11 +17,39 @@ BANREP_CSV_BASE = "https://www.banrep.gov.co/es/estadisticas/download?archivo={s
 # Los endpoints SUAMECA y Totoro han sido deprecados en 2025.
 # Usamos World Bank como fallback confiable para las series principales.
 BANREP_WORLDBANK_MAP = {
-    "IPC_variacion_anual":    ("CO", "FP.CPI.TOTL.ZG"),   # Inflacion CO
-    "IPC_variacion_mensual":  None,
-    "Desempleo":              ("CO", "SL.UEM.TOTL.ZS"),    # Desempleo CO
-    "PIB_trim":               ("CO", "NY.GDP.MKTP.KD.ZG"), # PIB CO
-    "TRM":                    None,  # handled by Superfinanciera fallback
+    # Series ya mapeadas (Colombia core)
+    "IPC_variacion_anual":    ("CO", "FP.CPI.TOTL.ZG"),     # Inflacion CO anual
+    "IPC_variacion_mensual":  None,                           # Sin equivalente WB mensual
+    "Desempleo":              ("CO", "SL.UEM.TOTL.ZS"),      # Desempleo CO
+    "PIB_trim":               ("CO", "NY.GDP.MKTP.KD.ZG"),   # PIB CO crecimiento
+    "TRM":                    ("CO", "PA.NUS.FCRF"),          # Tipo de cambio oficial COP/USD
+    # Sector externo Colombia
+    "ReservasInt":            ("CO", "FI.RES.TOTL.CD"),       # Reservas internacionales USD
+    "BalCom":                 ("CO", "NE.EXP.GNFS.CD"),       # Exportaciones bienes y servicios
+    "Remesas":                ("CO", "BX.TRF.PWKR.DT.GD.ZS"),# Remesas % PIB
+    "IED":                    ("CO", "BX.KLT.DINV.WD.GD.ZS"),# IED % PIB
+    "TermIntCom":             ("CO", "TT.PRI.MRCH.XD.WD"),   # Terminos de intercambio
+    "CuentaCorriente":        ("CO", "BN.CAB.XOKA.GD.ZS"),   # Cuenta corriente % PIB
+    # Fiscal Colombia
+    "DeudaPublica":           ("CO", "GC.DOD.TOTL.GD.ZS"),   # Deuda publica % PIB
+    "DeficitFiscal":          ("CO", "GC.BAL.CASH.GD.ZS"),   # Balance fiscal % PIB
+    # Tasas (proxy via World Bank — valores anuales)
+    "TasIntPol":              ("CO", "FR.INR.DPST"),          # Tasa depositos proxy
+    # MX via World Bank (fallback cuando Banxico sin token)
+    "MX_PIB":                 ("MX", "NY.GDP.MKTP.KD.ZG"),
+    "MX_IPC":                 ("MX", "FP.CPI.TOTL.ZG"),
+    "MX_Desempleo":           ("MX", "SL.UEM.TOTL.ZS"),
+    "MX_TRM":                 ("MX", "PA.NUS.FCRF"),
+    # BR via World Bank (complemento a BCB)
+    "BR_PIB":                 ("BR", "NY.GDP.MKTP.KD.ZG"),
+    "BR_IPC":                 ("BR", "FP.CPI.TOTL.ZG"),
+    "BR_Desempleo":           ("BR", "SL.UEM.TOTL.ZS"),
+    "BR_DeudaPublica":        ("BR", "GC.DOD.TOTL.GD.ZS"),
+    # EC via World Bank
+    "EC_PIB":                 ("EC", "NY.GDP.MKTP.KD.ZG"),
+    "EC_IPC":                 ("EC", "FP.CPI.TOTL.ZG"),
+    "EC_Desempleo":           ("EC", "SL.UEM.TOTL.ZS"),
+    "EC_CuentaCorriente":     ("EC", "BN.CAB.XOKA.GD.ZS"),
 }
 
 
@@ -42,7 +70,7 @@ class BanRepConnector(BaseConnector):
             try:
                 from connectors.world_bank import WorldBankConnector
                 wb_conn = WorldBankConnector()
-                df = wb_conn.fetch_series(wb_indicator, start_date, end_date, country=country_code)
+                df = wb_conn.fetch_series(f"{country_code}:{wb_indicator}", start_date, end_date)
                 if not df.empty:
                     logger.info(f"[banrep/worldbank] {serie_id}: {len(df)} registros via World Bank")
                     return df
@@ -61,16 +89,16 @@ class BanRepConnector(BaseConnector):
 
 
     def _fetch_trm_superfinanciera(self, start_date: str, end_date: str) -> pd.DataFrame:
-        """Scraping básico de TRM desde Superintendencia Financiera."""
-        url = "https://www.superfinanciera.gov.co/jsp/loader.jsf"
-        params = {
-            "lServicio": "PublicacionesTimesSeriesIndicadores",
-            "lTipo": "publicaciones",
-            "lFuncion": "loadIndicadores",
-            "id": "60"
-        }
-        data = self._get(url, params=params)
-        # Si falla, retornar vacío — será manejado por el caller
+        """Obtiene TRM via World Bank PA.NUS.FCRF (tasa de cambio oficial COP/USD)."""
+        try:
+            from connectors.world_bank import WorldBankConnector
+            wb = WorldBankConnector()
+            df = wb.fetch_series("CO:PA.NUS.FCRF", start_date, end_date)
+            if not df.empty:
+                logger.info(f"[banrep/TRM] {len(df)} registros via World Bank PA.NUS.FCRF")
+                return df
+        except Exception as e:
+            logger.warning(f"[banrep/TRM] World Bank fallback fallo: {e}")
         return self.empty_df()
 
     def _parse_response(self, data) -> pd.DataFrame:

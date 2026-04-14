@@ -4,6 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
 import io
+import os
 
 from data.database import (
     get_countries, get_variables, get_historical_data,
@@ -160,6 +161,28 @@ def main():
         unsafe_allow_html=True
     )
     st.divider()
+
+    # ── Banner de estado de API keys ─────────────────────────────────────────
+    _missing_keys = []
+    def _has_secret(key: str) -> bool:
+        try:
+            return bool(st.secrets.get(key, ""))
+        except Exception:
+            return False
+
+    if not os.getenv("FRED_API_KEY") and not _has_secret("FRED_API_KEY"):
+        _missing_keys.append("`FRED_API_KEY` — WTI, Brent, Treasuries, tasas globales (fred.stlouisfed.org)")
+    if not os.getenv("BANXICO_TOKEN") and not _has_secret("BANXICO_TOKEN"):
+        _missing_keys.append("`BANXICO_TOKEN` — datos México: tasas, peso MXN, inflacion (si.banxico.org.mx)")
+    if _missing_keys:
+        with st.expander("⚠️ Configuración Incompleta — algunas fuentes no están activas", expanded=False):
+            st.warning(
+                "Las siguientes API keys no están configuradas en `.env`. "
+                "Los datos de estas fuentes no se actualizarán automáticamente:\n\n" +
+                "\n".join(f"- {k}" for k in _missing_keys) +
+                "\n\nVer `.env.example` en el repositorio para instrucciones. "
+                "Los demás datos (BCB Brasil, World Bank, XM Colombia) funcionan sin API key."
+            )
 
     # ── Sidebar ──────────────────────────────────────────────────────────────
     st.sidebar.header("🌎 Filtros Globales")

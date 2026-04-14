@@ -16,7 +16,7 @@ from connectors.registry import get_connector_for_variable
 from sqlalchemy import text
 
 # ── Config ────────────────────────────────────────────────────────────────────
-START_DATE = "2024-01-01"
+START_DATE = "2020-01-01"   # 5+ años de historia para ARIMA y Holt-Winters
 END_DATE   = date.today().strftime("%Y-%m-%d")
 
 
@@ -92,12 +92,30 @@ def backfill():
                 ), {"id": var.id})
             error_count += 1
 
-    # ── Resumen ───────────────────────────────────────────────────────────────
+    # ── Resumen por proveedor ─────────────────────────────────────────────────
     print(f"\n{'='*60}")
     print(f"✅  OK:     {ok_count}")
     print(f"⏭️  SKIP:   {skip_count}")
     print(f"❌  ERROR:  {error_count}")
     print(f"{'='*60}")
+
+    # Resumen por api_provider
+    with engine.connect() as conn:
+        provider_summary = conn.execute(text("""
+            SELECT v.api_provider, COUNT(DISTINCT v.id) as vars,
+                   COUNT(t.variable_id) as records
+            FROM dim_variable v
+            LEFT JOIN fact_timeseries t ON t.variable_id = v.id
+                AND t.data_type = 'REAL_OFFICIAL'
+            WHERE v.connector_type = 'API' AND v.is_active = 1
+            GROUP BY v.api_provider
+            ORDER BY records DESC
+        """)).fetchall()
+        if provider_summary:
+            print("\n📡 Por proveedor API:")
+            for r in provider_summary:
+                status = "✅" if r[2] > 0 else "❌"
+                print(f"   {status} {(r[0] or 'N/A'):12s} {r[1]:2d} vars / {r[2]:5d} registros")
 
     # Total registros en la DB
     with engine.connect() as conn:
