@@ -55,6 +55,17 @@ def load_all_variables():
 def load_last_known(variable_id):
     return get_last_known_value(variable_id)
 
+@st.cache_data(ttl=3600)
+def _cached_sparkline_proj(var_id: int, periods: int = 3):
+    """Proyección cacheada para overlay en sparklines. Falla silenciosamente."""
+    try:
+        h = load_history(var_id)
+        if h.empty or len(h) < 3:
+            return None
+        return VariableAgent.calculate_projection(h, periods=periods)
+    except Exception:
+        return None
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def badge_html(connector_type: str) -> str:
     ct = (connector_type or 'SCRAPER').upper()
@@ -149,6 +160,29 @@ def render_metric_with_history(row, hist, key_prefix="chart"):
             xanchor="left", align="left"
         )
         fig.update_layout(margin=dict(l=0, r=0, t=5, b=40))
+        # ── Proyección overlay (3 períodos, solo si hay datos suficientes) ────
+        try:
+            if len(hist) >= 3:
+                proj = _cached_sparkline_proj(int(row['id']), 3)
+                if proj is not None and not proj.empty:
+                    if 'lower_80' in proj.columns and 'upper_80' in proj.columns:
+                        x_band = list(proj['date']) + list(reversed(list(proj['date'])))
+                        y_band = list(proj['upper_80']) + list(reversed(list(proj['lower_80'])))
+                        fig.add_trace(go.Scatter(
+                            x=x_band, y=y_band, fill='toself',
+                            fillcolor='rgba(251,146,60,0.12)',
+                            line=dict(color='rgba(0,0,0,0)'),
+                            showlegend=False, hoverinfo='skip'
+                        ))
+                    fig.add_trace(go.Scatter(
+                        x=proj['date'], y=proj['value'],
+                        mode='lines',
+                        line=dict(color='#f97316', width=1.5, dash='dot'),
+                        showlegend=False,
+                        hovertemplate=f"Proy: %{{y:,.4g}} {unit}<extra></extra>"
+                    ))
+        except Exception:
+            pass  # fallo silencioso — sparkline histórico sigue normal
         st.plotly_chart(fig, width='stretch', key=f"{key_prefix}_{row['id']}")
     else:
         lkg = load_last_known(row['id'])
@@ -259,7 +293,8 @@ def main():
             st.divider()
 
     # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab1, tab_energy, tab_comp, tab_proj, tab_data, tab_corp, tab_agent = st.tabs([
+    tab_global, tab1, tab_energy, tab_comp, tab_proj, tab_data, tab_corp, tab_agent = st.tabs([
+        "🌍 Global",
         "📊 Vista General",
         "⚡ Sector Energético",
         "🌎 América Latina",
@@ -268,6 +303,207 @@ def main():
         "🏢 Finanzas Corporativas",
         "⚙️ Agente de Datos"
     ])
+
+    # ════════════════════════════════════════════════════════════════════════
+    # TAB GLOBAL — Mercados Globales + Resumen 4 Países
+    # ════════════════════════════════════════════════════════════════════════
+    with tab_global:
+        st.subheader("🌍 Mercados & Economía Global")
+        st.markdown(
+            "Commodities energéticos, metales críticos para la transición energética, "
+            "índices financieros y resumen macro de los 4 países."
+        )
+
+        global_vars_df = load_variables(5)  # country_id=5 = Global (WW)
+        all_countries_df_g = load_countries()
+
+        if global_vars_df.empty:
+            st.info(
+                "No hay variables globales configuradas. "
+                "Ejecuta `python -X utf8 scripts/seed_variables_v4.py` para cargarlas."
+            )
+        else:
+            # ── Sección A: KPI Row (6 métricas principales) ───────────────────
+            GLOBAL_KPIS = [
+                "WTI Crude Oil", "Brent Crude Oil",
+                "Gold (Oro) Price", "DXY (Índice Dólar)",
+                "S&P 500 Index", "VIX (Índice de Volatilidad)",
+            ]
+            kpi_cols = st.columns(len(GLOBAL_KPIS))
+            for ki, vname in enumerate(GLOBAL_KPIS):
+                match = global_vars_df[global_vars_df['name'] == vname]
+                if not match.empty:
+                    g_row = match.iloc[0]
+                    h_g = load_history(int(g_row['id']))
+                    if not h_g.empty:
+                        last_g = h_g['value'].iloc[-1]
+                        prev_g = h_g['value'].iloc[-2] if len(h_g) > 1 else last_g
+                        delta_g = round(((last_g - prev_g) / prev_g * 100), 2) if prev_g != 0 else 0
+                        kpi_cols[ki].metric(
+                            vname.split('(')[0].strip(),
+                            format_number(last_g, g_row['unit']),
+                            f"{delta_g}%"
+                        )
+                    else:
+                        kpi_cols[ki].metric(vname.split('(')[0].strip(), "N/D")
+                else:
+                    kpi_cols[ki].metric(vname.split('(')[0].strip(), "—")
+
+            st.divider()
+
+            # ── Sección B: Gráficos normalizados por grupo de commodity ───────
+            COMMODITY_GROUPS = {
+                "⚡ Energéticos": ["WTI Crude Oil", "Brent Crude Oil", "Henry Hub Natural Gas"],
+                "🔩 Metales Críticos (Renovables)": [
+                    "Copper (Cobre) Price", "Aluminum (Aluminio) Price",
+                    "Lithium Carbonate Price", "Gold (Oro) Price"
+                ],
+                "🌾 Agrícolas (LATAM)": [
+                    "Cafe (Coffee) Arabica Price", "Soja (Soybean) Price", "Maiz (Corn) Price"
+                ],
+            }
+
+            for group_title, group_vars in COMMODITY_GROUPS.items():
+                st.markdown(f"#### {group_title}")
+                frames = []
+                for vname in group_vars:
+                    match = global_vars_df[global_vars_df['name'] == vname]
+                    if match.empty:
+                        continue
+                    h_c = load_history(int(match.iloc[0]['id']))
+                    if h_c.empty or len(h_c) < 2:
+                        continue
+                    h_c = h_c.copy()
+                    h_c['date'] = pd.to_datetime(h_c['date'])
+                    h_c = h_c.sort_values('date')
+                    base_val = h_c['value'].iloc[0]
+                    if base_val and base_val != 0:
+                        h_c['value_norm'] = (h_c['value'] / base_val * 100).round(2)
+                    else:
+                        h_c['value_norm'] = 100.0
+                    h_c['Variable'] = vname
+                    frames.append(h_c[['date', 'value_norm', 'Variable']])
+
+                if frames:
+                    combined_c = pd.concat(frames, ignore_index=True)
+                    fig_c = px.line(
+                        combined_c, x='date', y='value_norm', color='Variable',
+                        labels={'value_norm': '% vs base (=100)', 'date': 'Fecha'},
+                        color_discrete_sequence=px.colors.qualitative.Set2
+                    )
+                    fig_c.update_layout(
+                        height=280, hovermode='x unified',
+                        margin=dict(l=0, r=0, t=10, b=0),
+                        legend=dict(orientation='h', y=-0.2)
+                    )
+                    fig_c.add_hline(y=100, line_dash='dash', line_color='gray',
+                                    annotation_text="Base", annotation_position="right")
+                    st.plotly_chart(fig_c, width='stretch', key=f"glob_comm_{group_title[:8]}")
+                else:
+                    st.info(f"Sin datos para {group_title}. Ejecuta `backfill.py` con FRED_API_KEY.")
+
+            st.divider()
+
+            # ── Sección C: Tabla Resumen Macro 4 Países ───────────────────────
+            st.markdown("#### 🌎 Comparativo Macro — 4 Países")
+            st.caption("Últimos valores disponibles por país. Fuentes: BanRep, Banxico, BCB, World Bank, FRED.")
+
+            # Cargar variables de todos los países
+            all_vars_g = load_all_variables()
+            COUNTRY_SUMMARY_MAP = {
+                "🇨🇴 Colombia": {
+                    "Inflación (%)":   "IPC CO (var. anual)",
+                    "PIB var. (%)":    "PIB Trimestral CO",
+                    "Tasa política (%)":"Tasa de Intervención BanRep",
+                    "FX (COP/USD)":    "TRM (COP/USD)",
+                    "EMBI (bps)":      "EMBI Colombia",
+                    "Desempleo (%)":   "Desempleo CO",
+                },
+                "🇲🇽 México": {
+                    "Inflación (%)":    "IPC MX (var. anual)",
+                    "PIB var. (%)":     "PIB Trimestral MX",
+                    "Tasa política (%)":"Tasa Objetivo Banxico",
+                    "FX (MXN/USD)":     "Tipo de Cambio USD/MXN",
+                    "EMBI (bps)":       "EMBI México",
+                    "Desempleo (%)":    "Desempleo MX",
+                },
+                "🇧🇷 Brasil": {
+                    "Inflación (%)":    "IPCA BR (var. anual)",
+                    "PIB var. (%)":     "PIB Trimestral BR",
+                    "Tasa política (%)":"Tasa Selic BR",
+                    "FX (BRL/USD)":     "USD/BRL",
+                    "EMBI (bps)":       "EMBI Brasil",
+                    "Desempleo (%)":    "Desempleo BR",
+                },
+                "🇪🇨 Ecuador": {
+                    "Inflación (%)":    "IPC Ecuador (var. anual)",
+                    "PIB var. (%)":     "PIB Ecuador",
+                    "Tasa política (%)":"Tasa Interbancaria EC",
+                    "FX (USD)":         "USD (dolarizado)",
+                    "EMBI (bps)":       "CDS Ecuador 5Y",
+                    "Desempleo (%)":    "Tasa de Desempleo",
+                },
+            }
+
+            summary_data = {}
+            for country_label, metrics in COUNTRY_SUMMARY_MAP.items():
+                row_data = {}
+                for metric_label, var_name_frag in metrics.items():
+                    if not all_vars_g.empty:
+                        matches = all_vars_g[
+                            all_vars_g['name'].str.lower().str.contains(
+                                var_name_frag.lower()[:20], na=False, regex=False
+                            )
+                        ]
+                        if not matches.empty:
+                            h_s = load_history(int(matches.iloc[0]['id']))
+                            if not h_s.empty:
+                                row_data[metric_label] = round(h_s['value'].iloc[-1], 2)
+                            else:
+                                row_data[metric_label] = None
+                        else:
+                            row_data[metric_label] = None
+                    else:
+                        row_data[metric_label] = None
+                summary_data[country_label] = row_data
+
+            summary_df = pd.DataFrame(summary_data).T
+            # Colorear con Styler
+            def _color_inflation(val):
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    return ''
+                if val > 8:
+                    return 'background-color: #fca5a5; color: #7f1d1d'
+                elif val > 5:
+                    return 'background-color: #fed7aa; color: #7c2d12'
+                elif val < 2:
+                    return 'background-color: #bbf7d0; color: #14532d'
+                return ''
+
+            def _color_embi(val):
+                if val is None or (isinstance(val, float) and pd.isna(val)):
+                    return ''
+                if val > 800:
+                    return 'background-color: #fca5a5; color: #7f1d1d'
+                elif val > 400:
+                    return 'background-color: #fed7aa; color: #7c2d12'
+                return ''
+
+            try:
+                styled = (
+                    summary_df.style
+                    .applymap(_color_inflation, subset=["Inflación (%)"] if "Inflación (%)" in summary_df.columns else [])
+                    .applymap(_color_embi, subset=["EMBI (bps)"] if "EMBI (bps)" in summary_df.columns else [])
+                    .format(lambda x: f"{x:.2f}" if isinstance(x, float) and not pd.isna(x) else ("—" if x is None or (isinstance(x, float) and pd.isna(x)) else str(x)))
+                )
+                st.dataframe(styled, use_container_width=True)
+            except Exception:
+                st.dataframe(summary_df, use_container_width=True)
+
+            st.caption(
+                "Verde = inflación baja/buena | Naranja/Rojo = inflación alta o EMBI elevado. "
+                "Los valores EMBI corresponden al diferencial de riesgo soberano sobre US Treasuries."
+            )
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB 1 — Vista General
@@ -622,13 +858,61 @@ def main():
 
                     _sel_unit = variables_df[variables_df['id'] == sel_var_id]['unit'].values
                     _sel_unit = _sel_unit[0] if len(_sel_unit) > 0 else ''
+
+                    # ── Overlay: puntos de proyección institucional ───────────
+                    try:
+                        from data.consensus import get_latest_consensus_by_variable
+                        consensus_overlay = get_latest_consensus_by_variable(sel_var_id)
+                        if not consensus_overlay.empty:
+                            SCENARIO_SYMBOLS = {
+                                'base': 'diamond', 'optimista': 'triangle-up',
+                                'pessimista': 'triangle-down', 'actual': 'circle'
+                            }
+                            INSTITUTION_COLORS = {
+                                'IMF WEO': '#1f77b4', 'IMF WEO (API)': '#1f77b4',
+                                'Focus BCB (mediana)': '#2ca02c', 'Focus BCB (mediana, API)': '#2ca02c',
+                                'Banxico Encuesta': '#d62728', 'BanRep': '#9467bd',
+                                'BanRep (encuesta)': '#9467bd',
+                                'Goldman Sachs': '#8c564b', 'JPMorgan': '#e377c2',
+                                'BBVA Research': '#7f7f7f', 'Bancolombia': '#bcbd22',
+                                'Corficolombiana': '#17becf', 'EIA': '#aec7e8',
+                                'EIA (Energy Info Agency)': '#aec7e8',
+                                'BCE': '#ffbb78', 'CEPAL': '#98df8a',
+                                'Banco Mundial': '#c5b0d5', 'ANIF': '#f7b6d2',
+                                'Citibank': '#c49c94',
+                            }
+                            for inst, grp in consensus_overlay.groupby('source_institution'):
+                                color = INSTITUTION_COLORS.get(inst, '#636363')
+                                scen = grp['scenario'].iloc[0] if 'scenario' in grp.columns else 'base'
+                                symbol = SCENARIO_SYMBOLS.get(scen, 'circle')
+                                fig_proj.add_trace(go.Scatter(
+                                    x=pd.to_datetime(grp['target_date']),
+                                    y=grp['forecast_value'],
+                                    mode='markers+text',
+                                    name=inst,
+                                    marker=dict(size=10, symbol=symbol, color=color,
+                                                line=dict(color='white', width=1)),
+                                    text=[f"{v:.2f}" for v in grp['forecast_value']],
+                                    textposition='top center',
+                                    textfont=dict(size=9),
+                                    hovertemplate=(
+                                        f"<b>{inst}</b><br>"
+                                        "Objetivo: %{x|%b %Y}<br>"
+                                        f"Valor: %{{y:.2f}} {_sel_unit}<br>"
+                                        "Escenario: " + scen + "<extra></extra>"
+                                    ),
+                                ))
+                    except Exception:
+                        pass  # consenso no disponible — chart sigue funcionando
+
                     fig_proj.update_layout(
-                        height=420, hovermode='x unified',
-                        title=f"Proyección a 6 meses: {sel_var_name} ({_sel_unit})",
+                        height=460, hovermode='x unified',
+                        title=f"Proyección 6 meses + Consenso Analistas: {sel_var_name} ({_sel_unit})",
                         yaxis_title=_sel_unit,
-                        legend=dict(orientation='h', y=1.12)
+                        legend=dict(orientation='h', y=1.15, font=dict(size=10))
                     )
                     st.plotly_chart(fig_proj, width='stretch', key="projection_chart")
+                    st.caption("◆ Diamante = escenario base | ▲ Triángulo arriba = optimista | ▼ Triángulo abajo = pesimista")
                     st.dataframe(proj_result[['date', 'value']].round(4), use_container_width=True)
                 else:
                     st.warning("Proyección no disponible.")
@@ -655,15 +939,18 @@ def main():
                             }])
                             consensus_df = pd.concat([consensus_df, model_row], ignore_index=True)
 
+                    display_cols = ['source_institution', 'forecast_value', 'scenario', 'target_date']
+                    if 'notes' in consensus_df.columns:
+                        display_cols.append('notes')
+                    rename_map = {
+                        'source_institution': 'Institución',
+                        'forecast_value': 'Proyección',
+                        'scenario': 'Escenario',
+                        'target_date': 'Fecha Objetivo',
+                        'notes': 'Fuente / Notas',
+                    }
                     st.dataframe(
-                        consensus_df[['source_institution', 'forecast_value', 'scenario', 'target_date']].rename(
-                            columns={
-                                'source_institution': 'Institución',
-                                'forecast_value': 'Proyección',
-                                'scenario': 'Escenario',
-                                'target_date': 'Fecha Objetivo'
-                            }
-                        ),
+                        consensus_df[display_cols].rename(columns=rename_map),
                         use_container_width=True, hide_index=True
                     )
                 else:
