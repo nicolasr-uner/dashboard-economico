@@ -11,3 +11,8 @@ node_modules/
 .streamlit/secrets.toml
 *.sqlite3-wal
 *.sqlite3-shm
+.claude/
+.agents/
+test_apis_temp.py
+scripts/model_output*.txt
+*.xlsx
