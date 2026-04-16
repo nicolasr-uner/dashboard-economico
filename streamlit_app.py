@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 from datetime import datetime, date
 import io
 import os
+import streamlit.components.v1 as _stcomponents
 
 from data.database import (
     get_countries, get_variables, get_historical_data,
@@ -67,6 +68,22 @@ def _cached_sparkline_proj(var_id: int, periods: int = 3):
         return None
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
+def copy_to_clipboard_button(data_string: str, label: str = "📋 Copiar", key: str = "clip"):
+    """Botón que copia data_string al portapapeles del navegador (TSV-friendly para Excel)."""
+    safe = data_string.replace('\\', '\\\\').replace('`', '\\`').replace('${', '\\${')
+    _stcomponents.html(
+        f"""<button id="btn_{key}"
+            onclick="navigator.clipboard.writeText(`{safe}`)
+                .then(()=>{{this.textContent='✅ Copiado!';setTimeout(()=>this.textContent='{label}',2000)}})
+                .catch(()=>this.textContent='❌ Error');"
+            style="padding:5px 14px;border-radius:6px;border:1px solid #d1d5db;
+                   background:#f9fafb;cursor:pointer;font-size:13px;font-family:sans-serif;">
+            {label}
+        </button>""",
+        height=42
+    )
+
+
 def badge_html(connector_type: str) -> str:
     ct = (connector_type or 'SCRAPER').upper()
     cls = {'API': 'badge-api', 'SCRAPER': 'badge-scraper', 'MANUAL': 'badge-manual'}.get(ct, 'badge-scraper')
@@ -82,17 +99,36 @@ _PERCENT_UNITS = {'%', '% PIB'}
 
 
 def format_number(value, unit: str = '') -> str:
-    """Formato institucional: elimina notación científica."""
+    """Formato institucional: legible para humanos, sin notación científica."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "N/A"
+        return "—"
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return str(value)
     u = (unit or '').strip()
-    if u in _MONETARY_UNITS:
-        return f"{value:,.2f}"
+    # Porcentajes
     if u in _PERCENT_UNITS or u.endswith('%'):
-        return f"{value:.2f}"
-    if abs(value) >= 1_000:
+        return f"{value:.2f}%"
+    # Unidades ya escaladas — no re-escalar (ej: "USD M" ya está en millones)
+    _PRESCALED = {'USD M', 'COP B', 'USD B', 'COP M', 'COP/kWh', 'USD/kWh',
+                  'COP/MWh', 'USD/MWh', 'USD/bbl', 'USD/MMBtu', 'COP/kWp'}
+    if u in _PRESCALED:
         return f"{value:,.2f}"
-    if abs(value) >= 1:
+    # Tasas de cambio y ratios con "/"
+    if '/' in u:
+        return f"{value:,.4f}"
+    # Valores muy grandes: aplicar escala legible B/M/K
+    abs_val = abs(value)
+    if abs_val >= 1e12:
+        return f"{value/1e12:.2f} T"
+    if abs_val >= 1e9:
+        return f"{value/1e9:.2f} B"
+    if abs_val >= 1e6:
+        return f"{value/1e6:.2f} M"
+    if abs_val >= 1e3:
+        return f"{value/1e3:.2f} K"
+    if abs_val >= 1:
         return f"{value:.4f}"
     return f"{value:.6f}"
 
@@ -133,18 +169,36 @@ def render_metric_with_history(row, hist, key_prefix="chart"):
             value=format_number(last_val, unit),
             delta=f"{delta}%"
         )
+        # Fecha del último dato y frescura
+        try:
+            _last_date = pd.to_datetime(hist['date'].iloc[-1])
+            _days_old = (datetime.now() - _last_date).days
+            _date_str = _last_date.strftime('%d %b %Y')
+            if _days_old > 30:
+                st.caption(f"⚠️ Dato desactualizado — {_date_str}")
+            else:
+                st.caption(f"Actualizado: {_date_str}")
+        except Exception:
+            pass
         cap = _metric_caption(row['name'])
         if cap:
             st.caption(cap)
+        # Formato de eje Y según unidad
+        _y_tick_fmt = ".2f"
+        if unit in _PERCENT_UNITS or unit.endswith('%'):
+            _y_tick_fmt = ".2f"
+        elif abs(hist['value'].iloc[-1]) >= 1e9:
+            _y_tick_fmt = ".2s"
         fig = px.line(hist, x='date', y='value',
                       labels={'value': unit, 'date': 'Fecha'})
         fig.update_layout(height=150, margin=dict(l=0, r=0, t=5, b=0),
                           showlegend=False,
                           xaxis=dict(showticklabels=False, showgrid=False),
-                          yaxis=dict(showticklabels=True, showgrid=True, title=unit))
+                          yaxis=dict(showticklabels=True, showgrid=True, title=unit,
+                                     tickformat=_y_tick_fmt))
         fig.update_traces(
             line_color='#3b82f6', line_width=2,
-            hovertemplate=f"%{{x|%d %b %Y}}<br>%{{y:,.4g}} {unit}<extra></extra>"
+            hovertemplate=f"%{{x|%d %b %Y}}<br>{format_number(hist['value'].iloc[-1], unit)} {unit}<extra></extra>"
         )
         source_url = row.get('source_url') or ''
         provider = str(row.get('api_provider') or row.get('connector_type') or 'Fuente oficial').upper()
@@ -187,14 +241,23 @@ def render_metric_with_history(row, hist, key_prefix="chart"):
     else:
         lkg = load_last_known(row['id'])
         if lkg:
-            date_label = lkg['date'].strftime('%d %b %Y')
+            try:
+                _lkg_date = pd.to_datetime(lkg['date'])
+                _lkg_days = (datetime.now() - _lkg_date).days
+                _lkg_str = _lkg_date.strftime('%d %b %Y')
+            except Exception:
+                _lkg_days, _lkg_str = 999, "—"
             st.metric(
                 label=f"{row['name']} ({unit})",
                 value=format_number(lkg['value'], unit)
             )
-            st.caption(f"Dato histórico: {date_label}")
+            if _lkg_days > 30:
+                st.caption(f"⚠️ Dato desactualizado — {_lkg_str}")
+            else:
+                st.caption(f"Actualizado: {_lkg_str}")
         else:
-            st.metric(label=f"{row['name']}", value="Sin datos")
+            st.caption(f"**{row['name']}**")
+            st.caption("📊 Datos en proceso de actualización")
 
 
 # ── Función principal ─────────────────────────────────────────────────────────
@@ -210,33 +273,22 @@ def main():
     )
     st.divider()
 
-    # ── Banner de estado de API keys ─────────────────────────────────────────
-    _missing_keys = []
+    # ── Estado de API keys (para uso en sidebar y lógica condicional) ────────
     def _has_secret(key: str) -> bool:
         try:
             return bool(st.secrets.get(key, ""))
         except Exception:
             return False
 
-    if not os.getenv("FRED_API_KEY") and not _has_secret("FRED_API_KEY"):
-        _missing_keys.append("`FRED_API_KEY` — WTI, Brent, Treasuries, tasas globales (fred.stlouisfed.org)")
-    if not os.getenv("BANXICO_TOKEN") and not _has_secret("BANXICO_TOKEN"):
-        _missing_keys.append("`BANXICO_TOKEN` — datos México: tasas, peso MXN, inflacion (si.banxico.org.mx)")
-    if _missing_keys:
-        with st.expander("⚠️ Configuración Incompleta — algunas fuentes no están activas", expanded=False):
-            st.warning(
-                "Las siguientes API keys no están configuradas en `.env`. "
-                "Los datos de estas fuentes no se actualizarán automáticamente:\n\n" +
-                "\n".join(f"- {k}" for k in _missing_keys) +
-                "\n\nVer `.env.example` en el repositorio para instrucciones. "
-                "Los demás datos (BCB Brasil, World Bank, XM Colombia) funcionan sin API key."
-            )
+    _fred_ok    = bool(os.getenv("FRED_API_KEY") or _has_secret("FRED_API_KEY"))
+    _banxico_ok = bool(os.getenv("BANXICO_TOKEN") or _has_secret("BANXICO_TOKEN"))
+    _active_sources = sum([_fred_ok, _banxico_ok, True, True])  # BCB y WorldBank siempre activos
 
     # ── Sidebar ──────────────────────────────────────────────────────────────
     st.sidebar.header("🌎 Filtros Globales")
     countries_df = load_countries()
     if countries_df.empty:
-        st.warning("No hay países en la base de datos. Ejecuta `python scripts/seed_variables_v2.py`.")
+        st.error("⚠️ Error de configuración. Por favor contacta al administrador.")
         return
 
     country_opts = dict(zip(countries_df['name'], countries_df['id']))
@@ -264,6 +316,14 @@ def main():
     # ── Sync sidebar → URL ────────────────────────────────────────────────────
     st.query_params["pais"] = selected_country_name
 
+    # Badge compacto de fuentes activas
+    _total_sources = 4
+    _inactive = (0 if _fred_ok else 1) + (0 if _banxico_ok else 1)
+    if _inactive > 0:
+        st.sidebar.caption(f"🟡 {_total_sources - _inactive}/{_total_sources} fuentes globales activas")
+    else:
+        st.sidebar.caption(f"🟢 {_total_sources}/{_total_sources} fuentes activas")
+
     variables_df = load_variables(selected_country_id)
 
     # ── Aviso Legal ───────────────────────────────────────────────────────────
@@ -275,6 +335,44 @@ def main():
         "Datos capturados de fuentes públicas: BanRep, DANE, XM, FRED, BCB, Banxico. "
         "Puede existir rezago en la publicación. Ley 1581/2012."
     )
+
+    # ── Indicador de salud de datos ───────────────────────────────────────────
+    st.sidebar.divider()
+    try:
+        _all_v_health = load_all_variables()
+        if not _all_v_health.empty:
+            _ahora = datetime.utcnow()
+            _sv, _sa, _sr = 0, 0, 0
+            _health_rows = []
+            for _, _hv in _all_v_health.iterrows():
+                _last_f = _hv.get('last_successful_fetch')
+                if _last_f:
+                    try:
+                        _last_dt = pd.to_datetime(_last_f)
+                        _days = (_ahora - _last_dt.replace(tzinfo=None)).days
+                        if _days <= 7:
+                            _sv += 1; _est = "🟢"
+                        else:
+                            _sa += 1; _est = "🟡"
+                        _health_rows.append({
+                            "Variable": str(_hv.get('name',''))[:28],
+                            "Fuente": str(_hv.get('api_provider','—') or '—').upper()[:8],
+                            "Días": _days, "Estado": _est
+                        })
+                    except Exception:
+                        _sr += 1
+                else:
+                    _sr += 1
+            with st.sidebar.expander("📊 Estado de datos"):
+                st.write(f"🟢 **{_sv}** actualizadas")
+                st.write(f"🟡 **{_sa}** desactualizadas (>7d)")
+                st.write(f"🔴 **{_sr}** sin datos")
+                if _health_rows:
+                    _hdf = pd.DataFrame(_health_rows)
+                    st.dataframe(_hdf, hide_index=True, use_container_width=True,
+                                 height=min(220, len(_health_rows) * 35 + 40))
+    except Exception:
+        pass
 
     # ── Biblioteca de Datos ───────────────────────────────────────────────────
     st.sidebar.divider()
@@ -292,17 +390,47 @@ def main():
                 st.caption(f"{provider} — {desc[:80]}")
             st.divider()
 
-    # ── Tabs ─────────────────────────────────────────────────────────────────
-    tab_global, tab1, tab_energy, tab_comp, tab_proj, tab_data, tab_corp, tab_agent = st.tabs([
-        "🌍 Global",
-        "📊 Vista General",
-        "⚡ Sector Energético",
-        "🌎 América Latina",
-        "🔮 Proyecciones",
-        "📋 Datos y Exportación",
-        "🏢 Finanzas Corporativas",
-        "⚙️ Agente de Datos"
-    ])
+    # ── Tabs dinámicos según disponibilidad de datos ─────────────────────────
+    _all_tabs_vars = load_all_variables()
+
+    # Mostrar Finanzas Corporativas solo si hay al menos 1 variable con datos
+    _show_corp = False
+    if not _all_tabs_vars.empty and 'category' in _all_tabs_vars.columns:
+        _corp_vars_check = _all_tabs_vars[_all_tabs_vars['category'] == 'corporate_finance']
+        for _, _cv in _corp_vars_check.iterrows():
+            if not load_history(_cv['id']).empty:
+                _show_corp = True
+                break
+
+    # Mostrar América Latina solo si hay datos para 2+ países
+    _show_latam = False
+    if not _all_tabs_vars.empty and 'country_id' in _all_tabs_vars.columns:
+        _countries_with_data = set()
+        for _, _lv in _all_tabs_vars.iterrows():
+            if _lv.get('country_id') and not load_history(_lv['id']).empty:
+                _countries_with_data.add(_lv['country_id'])
+                if len(_countries_with_data) >= 2:
+                    _show_latam = True
+                    break
+
+    _tab_labels = ["🌍 Global", "📊 Vista General", "⚡ Sector Energético"]
+    if _show_latam:
+        _tab_labels.append("🌎 América Latina")
+    _tab_labels += ["🔮 Proyecciones", "📋 Datos y Exportación"]
+    if _show_corp:
+        _tab_labels.append("🏢 Finanzas Corporativas")
+    _tab_labels.append("🤖 Asistente de Datos")
+
+    _tabs_list = st.tabs(_tab_labels)
+    _ti = 0
+    tab_global = _tabs_list[_ti]; _ti += 1
+    tab1       = _tabs_list[_ti]; _ti += 1
+    tab_energy = _tabs_list[_ti]; _ti += 1
+    tab_comp   = _tabs_list[_ti] if _show_latam else None; _ti += (1 if _show_latam else 0)
+    tab_proj   = _tabs_list[_ti]; _ti += 1
+    tab_data   = _tabs_list[_ti]; _ti += 1
+    tab_corp   = _tabs_list[_ti] if _show_corp else None; _ti += (1 if _show_corp else 0)
+    tab_agent  = _tabs_list[_ti]
 
     # ════════════════════════════════════════════════════════════════════════
     # TAB GLOBAL — Mercados Globales + Resumen 4 Países
@@ -318,10 +446,7 @@ def main():
         all_countries_df_g = load_countries()
 
         if global_vars_df.empty:
-            st.info(
-                "No hay variables globales configuradas. "
-                "Ejecuta `python -X utf8 scripts/seed_variables_v4.py` para cargarlas."
-            )
+            st.info("📊 Datos de mercados globales en proceso de configuración.")
         else:
             # ── Sección A: KPI Row (6 métricas principales) ───────────────────
             GLOBAL_KPIS = [
@@ -329,25 +454,37 @@ def main():
                 "Gold (Oro) Price", "DXY (Índice Dólar)",
                 "S&P 500 Index", "VIX (Índice de Volatilidad)",
             ]
-            kpi_cols = st.columns(len(GLOBAL_KPIS))
-            for ki, vname in enumerate(GLOBAL_KPIS):
+            # Solo mostrar KPIs que tienen datos reales
+            _kpi_data = []
+            for vname in GLOBAL_KPIS:
                 match = global_vars_df[global_vars_df['name'] == vname]
                 if not match.empty:
                     g_row = match.iloc[0]
                     h_g = load_history(int(g_row['id']))
                     if not h_g.empty:
-                        last_g = h_g['value'].iloc[-1]
-                        prev_g = h_g['value'].iloc[-2] if len(h_g) > 1 else last_g
-                        delta_g = round(((last_g - prev_g) / prev_g * 100), 2) if prev_g != 0 else 0
-                        kpi_cols[ki].metric(
-                            vname.split('(')[0].strip(),
-                            format_number(last_g, g_row['unit']),
-                            f"{delta_g}%"
-                        )
-                    else:
-                        kpi_cols[ki].metric(vname.split('(')[0].strip(), "N/D")
-                else:
-                    kpi_cols[ki].metric(vname.split('(')[0].strip(), "—")
+                        _kpi_data.append((vname, g_row, h_g))
+
+            if _kpi_data:
+                kpi_cols = st.columns(len(_kpi_data))
+                for ki, (vname, g_row, h_g) in enumerate(_kpi_data):
+                    last_g = h_g['value'].iloc[-1]
+                    prev_g = h_g['value'].iloc[-2] if len(h_g) > 1 else last_g
+                    delta_g = round(((last_g - prev_g) / prev_g * 100), 2) if prev_g != 0 else 0
+                    kpi_cols[ki].metric(
+                        vname.split('(')[0].strip(),
+                        format_number(last_g, g_row['unit']),
+                        f"{delta_g}%"
+                    )
+                    # VIX color coding
+                    if 'VIX' in vname:
+                        if last_g < 20:
+                            kpi_cols[ki].caption("🟢 Volatilidad baja (<20)")
+                        elif last_g < 30:
+                            kpi_cols[ki].caption("🟡 Volatilidad moderada (20–30)")
+                        else:
+                            kpi_cols[ki].caption("🔴 Volatilidad alta (>30)")
+            elif not _fred_ok:
+                st.info("📊 Los datos de mercados globales requieren configuración adicional. Contacta al administrador.")
 
             st.divider()
 
@@ -399,8 +536,10 @@ def main():
                     fig_c.add_hline(y=100, line_dash='dash', line_color='gray',
                                     annotation_text="Base", annotation_position="right")
                     st.plotly_chart(fig_c, width='stretch', key=f"glob_comm_{group_title[:8]}")
+                elif not _fred_ok:
+                    st.info(f"📊 Los datos de {group_title} requieren configuración adicional. Contacta al administrador.")
                 else:
-                    st.info(f"Sin datos para {group_title}. Ejecuta `backfill.py` con FRED_API_KEY.")
+                    st.info(f"📊 Datos de {group_title} en proceso de actualización.")
 
             st.divider()
 
@@ -586,7 +725,7 @@ def main():
 
         all_vars = load_all_variables()
         if all_vars.empty or 'category' not in all_vars.columns:
-            st.info("Variables de energía pendientes de carga. Ejecute el agente de datos o el backfill.")
+            st.info("📊 Variables de energía en proceso de configuración.")
         else:
             energy_vars = all_vars[all_vars['category'] == 'energy']
 
@@ -618,10 +757,7 @@ def main():
                 st.info(f"**{ctx['operator']}** — {ctx['note']}")
 
             if energy_vars.empty:
-                st.info(
-                    "Variables de energía pendientes de carga. "
-                    "Ejecute `python scripts/seed_variables_v2.py` y luego `python scripts/backfill.py`."
-                )
+                st.info("📊 Variables de energía pendientes de configuración inicial.")
             else:
                 # Recopilar datos energéticos
                 energy_data = {}
@@ -631,10 +767,7 @@ def main():
                         energy_data[erow['name']] = {'df': h, 'unit': erow.get('unit', ''), 'id': erow['id']}
 
                 if not energy_data:
-                    st.info(
-                        "Variables energéticas sin datos aún. "
-                        "Ejecute `python scripts/backfill.py` para cargar datos históricos."
-                    )
+                    st.info("📊 Datos energéticos en proceso de carga. Por favor regresa pronto.")
                 else:
                     # KPI resumen
                     kpi_cols = st.columns(min(4, len(energy_data)))
@@ -727,9 +860,10 @@ def main():
                         st.plotly_chart(fig_c, width='stretch', key="energy_commodities")
 
     # ════════════════════════════════════════════════════════════════════════
-    # TAB 3 — Comparativa Regional
+    # TAB 3 — Comparativa Regional (visible solo si _show_latam)
     # ════════════════════════════════════════════════════════════════════════
-    with tab_comp:
+    if tab_comp is not None:
+     with tab_comp:
         st.subheader("🌎 Comparativa Macro Regional")
         st.markdown("Cruza y correlaciona el rendimiento de métricas clave a lo largo de América Latina.")
         st.info("🌎 Esta vista muestra **todos los países (CO, MX, BR, EC)** simultáneamente, independientemente del país seleccionado en el filtro lateral.")
@@ -1057,13 +1191,18 @@ def main():
                     st.dataframe(stats, use_container_width=True, hide_index=True)
 
                 st.divider()
-                col_d1, col_d2 = st.columns(2)
+                # ── Botones de exportación ────────────────────────────────────
+                st.markdown("**Exportar datos:**")
+                _export_df = pivot_df if view_mode == "Pivot (fechas × series)" else master_df
+                col_d1, col_d2, col_d3 = st.columns(3)
+
                 with col_d1:
-                    csv_data = master_df.to_csv(index=False).encode('utf-8')
+                    csv_data = _export_df.to_csv(index=(view_mode == "Pivot (fechas × series)")).encode('utf-8')
                     st.download_button(
                         "⬇️ Descargar CSV", data=csv_data,
                         file_name=f"cerebro_economico_{date.today()}.csv", mime="text/csv"
                     )
+
                 with col_d2:
                     try:
                         import openpyxl
@@ -1072,6 +1211,13 @@ def main():
                             master_df.to_excel(writer, sheet_name='Datos', index=False)
                             if view_mode == "Pivot (fechas × series)":
                                 pivot_df.to_excel(writer, sheet_name='Pivot')
+                            # Auto-ajustar anchos de columna
+                            for sheet in writer.sheets.values():
+                                for col_cells in sheet.columns:
+                                    max_len = max(
+                                        len(str(cell.value or '')) for cell in col_cells
+                                    )
+                                    sheet.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 40)
                         xlsx_buf.seek(0)
                         st.download_button(
                             "⬇️ Descargar XLSX", data=xlsx_buf.getvalue(),
@@ -1079,7 +1225,14 @@ def main():
                             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                         )
                     except ImportError:
-                        st.info("Instala `openpyxl` para exportar a Excel.")
+                        st.caption("Instala `openpyxl` para XLSX.")
+
+                with col_d3:
+                    # TSV para pegar en Excel (Tab-Separated)
+                    _tsv = _export_df.to_csv(
+                        index=(view_mode == "Pivot (fechas × series)"), sep='\t'
+                    )
+                    copy_to_clipboard_button(_tsv, label="📋 Copiar (TSV para Excel)", key="exp_tsv")
             else:
                 st.info("No hay datos para los filtros seleccionados.")
 
@@ -1087,10 +1240,54 @@ def main():
     # TAB 6 — Agente de Datos
     # ════════════════════════════════════════════════════════════════════════
     with tab_agent:
-        st.subheader("⚙️ Agente de Datos")
+        st.subheader("🤖 Asistente de Datos")
+        st.markdown(
+            "Haz preguntas sobre los datos económicos del dashboard. "
+            "El asistente busca en la base de datos y responde con valores actuales y fuentes."
+        )
 
-        # Estado del sistema
-        with st.expander("📊 Estado del Sistema", expanded=True):
+        # ── Sección 1: Chat ───────────────────────────────────────────────────
+        if 'chat_history' not in st.session_state:
+            st.session_state.chat_history = []
+
+        # Mostrar historial
+        for msg in st.session_state.chat_history:
+            with st.chat_message(msg['role']):
+                st.markdown(msg['content'])
+
+        # Input de usuario
+        user_q = st.chat_input("¿Cuál es la TRM hoy? / ¿Cómo está la inflación en Colombia?")
+        if user_q:
+            st.session_state.chat_history.append({'role': 'user', 'content': user_q})
+            with st.chat_message('user'):
+                st.markdown(user_q)
+            with st.chat_message('assistant'):
+                with st.spinner("Consultando datos..."):
+                    try:
+                        from ai_engine.chatbot import answer_question
+                        all_vars_chat = load_all_variables()
+                        response = answer_question(user_q, all_vars_chat, load_history)
+                    except Exception as e:
+                        response = (
+                            "Lo siento, no pude procesar tu pregunta en este momento. "
+                            "Por favor intenta de nuevo.\n\n"
+                            "*Este análisis es informativo. Verifica los datos en la fuente oficial.*"
+                        )
+                st.markdown(response)
+                st.session_state.chat_history.append({'role': 'assistant', 'content': response})
+
+        if st.session_state.chat_history:
+            if st.button("🗑 Limpiar conversación", key="clear_chat"):
+                st.session_state.chat_history = []
+                st.rerun()
+
+        st.divider()
+
+        # ── Sección 2: Administración de variables ────────────────────────────
+        st.markdown("---")
+        st.markdown("### 🔧 Administración de variables")
+
+        with st.expander("📊 Estado del Sistema", expanded=False):
             all_v = load_all_variables()
             total_vars = len(all_v) if not all_v.empty else 0
             vars_with_data = 0
@@ -1185,11 +1382,12 @@ def main():
         except ImportError:
             st.info("Módulo de consenso no disponible aún.")
         except Exception as e:
-            st.error(f"Error guardando proyección: {e}")
+            st.error("No se pudo guardar la proyección. Por favor intenta de nuevo.")
     # ====================================================================
-    # TAB CORP — Finanzas Corporativas
+    # TAB CORP — Finanzas Corporativas (visible solo si _show_corp)
     # ====================================================================
-    with tab_corp:
+    if tab_corp is not None:
+     with tab_corp:
         st.subheader("🏢 Finanzas Corporativas — Modelos Exagon & Ruitoque")
         st.markdown(
             "Panel de control financiero extraido automáticamente de los modelos Excel internos. "
@@ -1198,13 +1396,13 @@ def main():
 
         all_corp = load_all_variables()
         if all_corp.empty:
-            st.info("Carga las variables con `seed_variables_v3.py`.")
+            st.info("📊 Datos de finanzas corporativas en proceso de carga.")
         else:
             corp_vars = all_corp[all_corp.get('category', pd.Series()) == 'corporate_finance'] \
                 if 'category' in all_corp.columns else pd.DataFrame()
 
             if corp_vars.empty:
-                st.info("No hay variables de finanzas corporativas. Ejecuta `seed_variables_v3.py`.")
+                st.info("📊 Esta sección se habilitará cuando haya datos disponibles.")
             else:
                 # --- KPI Panel ---
                 EXCEL_VARS = [
@@ -1239,8 +1437,8 @@ def main():
                                 st.metric(label=row['name'], value=display)
                                 st.caption(src[:120] if src else "")
                             else:
-                                st.metric(label=row['name'], value="Sin datos")
-                                st.caption("Ejecuta `scripts/read_excel_models.py` para poblar.")
+                                st.metric(label=row['name'], value="—")
+                                st.caption("📊 Datos en proceso de carga.")
 
                 st.divider()
 
@@ -1272,7 +1470,7 @@ def main():
                     )
                     st.plotly_chart(fig_w, width='stretch', key="corp_wacc_chart")
                 else:
-                    st.info("Pobla datos con `scripts/read_excel_models.py` para ver el gráfico WACC.")
+                    st.info("📊 Sin datos suficientes para mostrar la estructura de capital.")
 
                 st.divider()
 
