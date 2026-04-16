@@ -89,39 +89,16 @@ Excel Files ─┘──> read_excel_models  │
 
 ## Setup Rapido
 
-### Prerrequisitos
-- Python 3.11+
-- SQLite (desarrollo) o PostgreSQL+TimescaleDB (produccion)
-
-### Instalacion
-
 ```bash
 pip install -r requirements.txt
-
-# Configurar API keys en .env
-echo "FRED_API_KEY=tu_api_key" >> .env
-echo "BANXICO_TOKEN=tu_token" >> .env
-
-# Inicializar base de datos y cargar variables
 python -c "from models.db import init_db; init_db()"
-python scripts/seed_variables_v3.py
-
-# Backfill de datos historicos
-python scripts/backfill.py
-
-# Validar integridad de datos
-python scripts/validate_data.py
-
-# Iniciar dashboard
+python scripts/seed_variables_v4.py
 streamlit run streamlit_app.py
 ```
 
-### Docker (produccion)
+> Para la guia completa de instalacion, API keys y cobertura mundial, ver **[SETUP.md](SETUP.md)**.
 
-```bash
-docker-compose up -d
-# Servicios: PostgreSQL+TimescaleDB, Redis, Celery worker/beat
-```
+El dashboard funciona sin API keys (datos de Brasil via BCB y Colombia energetico via XM). Para activar mercados globales y Mexico, agregar las keys en `.streamlit/secrets.toml` (ver `SETUP.md` seccion 3).
 
 ## Validacion de Datos
 
@@ -146,13 +123,16 @@ python scripts/validate_data.py --output md
 
 ## Estado del Proyecto
 
-**Cobertura actual:** 12.9% (17/132 variables con datos)
+**Cobertura base (sin keys):** ~23% — Brasil (BCB) y Colombia energetico (XM) completamente funcionales.  
+**Con FRED + Banxico configurados:** ~60% — commodities globales, mercados USA y Mexico activos.
 
-**Conectores funcionales:** BCB (Brasil), World Bank (fallback)
+| Fuente | Estado | Key? | Variables |
+|--------|--------|------|-----------|
+| BCB Brasil | ✅ Funcional | No | Selic, IPCA, USD/BRL, CDI, Desempleo |
+| XM Colombia | ✅ Funcional | No | Aportes Hidricos energeticos |
+| World Bank | ✅ Funcional | No | PIB, Inflacion, Desempleo (anual, 190 paises) |
+| FRED | ⚡ Requiere key | Si | WTI, Brent, Gold, S&P500, VIX, Fed Funds, etc. |
+| Banxico | ⚡ Requiere key | Si | Tasa objetivo, TIIE, USD/MXN, IPC MX |
+| BanRep Colombia | ⚠️ Deprecado 2025 | No | Redirige a World Bank automaticamente |
 
-**Bloqueantes criticos:**
-- `FRED_API_KEY` no configurada (17 variables bloqueadas)
-- `BANXICO_TOKEN` no configurado (9 variables bloqueadas)
-- BanRep API deprecada en 2025 (27 variables afectadas)
-
-Ver `docs/audit_report.md` para el diagnostico completo.
+Ver `docs/audit_report.md` para diagnostico completo y [SETUP.md](SETUP.md) para instrucciones de configuracion.
