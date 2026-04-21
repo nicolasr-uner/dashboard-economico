@@ -60,6 +60,19 @@ st.markdown("""
   h1 { color: #1e3a8a; }
   .stMetric { background:white; padding:12px 16px; border-radius:10px;
               box-shadow:0 2px 8px rgba(0,0,0,0.08); }
+
+  /* ── Modo oscuro ────────────────────────────────────────────── */
+  body.dark-mode, body.dark-mode [class*="css"],
+  body.dark-mode .stApp { background:#0d1117 !important; color:#e6edf3 !important; }
+  body.dark-mode .bb-value  { color:#e6edf3 !important; }
+  body.dark-mode .bb-ticker { color:#8b949e !important; }
+  body.dark-mode .bb-meta   { color:#8b949e !important; }
+  body.dark-mode .kpi-box   { background:#161b22 !important; border-color:#30363d !important; }
+  body.dark-mode .kpi-val   { color:#e6edf3 !important; }
+  body.dark-mode .bb-freq-tag { background:#21262d !important; color:#8b949e !important; }
+  body.dark-mode h1 { color:#58a6ff !important; }
+  body.dark-mode .stMetric { background:#161b22 !important; }
+  body.dark-mode [data-baseweb="tab-list"] { background:#161b22 !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -299,12 +312,10 @@ def show_variable_detail(var_id, var_name, unit, ct, src_url, desc, nat_freq='mo
         st.dataframe(tbl, hide_index=True, use_container_width=True)
 
 # ── Tarjeta Bloomberg con rango de tiempo ─────────────────────────────────────
-def render_bloomberg_card(row, hist, key_prefix="card"):
+def render_bloomberg_card(row, hist, key_prefix="card", compact=False):
     """
-    Tarjeta compacta tipo Bloomberg/Yahoo Finance:
-    - Rango de tiempo (1M/3M/6M/1A/2A/MAX) en cabecera
-    - Frecuencia natural del dato como etiqueta, no como control
-    - Agregación solo en modal de detalle
+    Tarjeta Bloomberg/Yahoo Finance con rango per-card.
+    compact=True → chart más pequeño, sin botón detalle expandido.
     """
     var_id   = int(row['id'])
     unit     = row.get('unit','') or ''
@@ -393,8 +404,9 @@ def render_bloomberg_card(row, hist, key_prefix="card"):
             provider = str(row.get('api_provider') or ct).upper()
             ann = f"Fuente: {provider}"
             if src_url and src_url != '#': ann += f" — <a href='{src_url}'>{src_url[:45]}</a>"
+            ch = 75 if compact else 110
             fig.update_layout(
-                height=110, margin=dict(l=0, r=0, t=2, b=34),
+                height=ch, margin=dict(l=0, r=0, t=2, b=34),
                 showlegend=False, plot_bgcolor='rgba(0,0,0,0)', paper_bgcolor='rgba(0,0,0,0)',
                 xaxis=dict(showticklabels=False, showgrid=False, zeroline=False),
                 yaxis=dict(showticklabels=True, showgrid=False, tickformat=_yfmt, title=''))
@@ -403,8 +415,9 @@ def render_bloomberg_card(row, hist, key_prefix="card"):
                                font=dict(size=8, color="#9ca3af"), xanchor="left")
             st.plotly_chart(fig, use_container_width=True, key=f"{key_prefix}_{var_id}")
 
-            cap = _caption(row['name'])
-            if cap: st.caption(cap)
+            if not compact:
+                cap = _caption(row['name'])
+                if cap: st.caption(cap)
             if st.button("Ver detalle →", key=f"det_{key_prefix}_{var_id}",
                          use_container_width=True):
                 show_variable_detail(var_id, row['name'], unit, ct, src_url, desc, nat_freq)
@@ -496,6 +509,17 @@ def render_sidebar(countries_df):
     st.sidebar.caption("📚 Biblioteca completa en la pestaña **Data Hub**.")
     st.sidebar.caption("📊 Cada gráfica tiene su propio selector de rango y frecuencia.")
 
+    # Modo oscuro
+    st.sidebar.divider()
+    dark = st.sidebar.toggle("🌙 Modo oscuro", value=st.session_state.get('dark_mode', False),
+                             key="dark_mode_toggle")
+    st.session_state['dark_mode'] = dark
+    _stcomponents.html(
+        f"""<script>
+        var b = window.parent.document.body;
+        {"b.classList.add('dark-mode');" if dark else "b.classList.remove('dark-mode');"}
+        </script>""", height=0)
+
     with st.sidebar.expander("⚖️ Aviso Legal", expanded=False):
         st.caption("Información meramente informativa. No constituye asesoría de inversión. "
                    "Fuentes: BanRep, DANE, XM, FRED, BCB, Banxico. Ley 1581/2012.")
@@ -520,6 +544,28 @@ def main():
     sel_name, sel_id = render_sidebar(countries_df)
     variables_df     = load_variables(sel_id)
     _all_v           = load_all_variables()
+
+    # ── Búsqueda global ───────────────────────────────────────────────────────
+    if not _all_v.empty:
+        all_names = sorted(_all_v['name'].dropna().unique().tolist())
+        sc1, sc2 = st.columns([3, 1])
+        with sc1:
+            search_q = st.text_input("", placeholder="🔍  Buscar variable  (ej: TRM, IPC, PIB, Selic...)",
+                                     label_visibility="collapsed", key="global_search")
+        if search_q.strip():
+            matches = [n for n in all_names if search_q.strip().lower() in n.lower()]
+            if matches:
+                with sc2:
+                    pick = st.selectbox("", matches, label_visibility="collapsed", key="search_pick")
+                hit = _all_v[_all_v['name'] == pick]
+                if not hit.empty:
+                    r = hit.iloc[0]
+                    nat_f = (r.get('frequency') or 'monthly').lower()
+                    show_variable_detail(int(r['id']), r['name'],
+                                         r.get('unit',''), r.get('connector_type','API'),
+                                         r.get('source_url','#'), r.get('description',''), nat_f)
+            else:
+                st.caption(f"Sin resultados para «{search_q}»")
 
     # Tabs dinámicos
     _show_corp  = False; _show_latam = False
@@ -680,15 +726,18 @@ def main():
         if variables_df.empty:
             st.info("No hay variables configuradas para este país.")
         else:
-            c_cat, c_info = st.columns([2,2])
+            c_cat, c_dens, c_info = st.columns([2, 1, 2])
             with c_cat:
                 cats = ['Todas'] + sorted(variables_df['category'].dropna().unique().tolist()) \
                     if 'category' in variables_df.columns else ['Todas']
                 sel_cat = st.selectbox("Filtrar por categoría", cats, key="t1_cat")
+            with c_dens:
+                compact_mode = st.toggle("Vista compacta", value=False, key="compact_toggle")
             with c_info:
                 st.info("📅 Cada tarjeta tiene su propio selector de rango · "
                         "Click en **Ver detalle →** para cambiar agregación.")
 
+            n_cols = 4 if compact_mode else 3
             filtered = variables_df if sel_cat=='Todas' else \
                 variables_df[variables_df['category']==sel_cat] \
                 if 'category' in variables_df.columns else variables_df
@@ -704,20 +753,20 @@ def main():
                     sv = variables_df[variables_df['category'].isin(scats)]
                     if sv.empty: continue
                     st.subheader(stitle)
-                    cols = st.columns(min(3,len(sv)))
+                    cols = st.columns(min(n_cols, len(sv)))
                     for i,(_, row) in enumerate(sv.iterrows()):
-                        with cols[i%3]: render_bloomberg_card(row, load_history(row['id']), "sec")
+                        with cols[i % n_cols]: render_bloomberg_card(row, load_history(row['id']), "sec", compact_mode)
                 ov = variables_df[~variables_df['category'].isin(mapped)]
                 if not ov.empty:
                     st.subheader("📌 Otros Indicadores")
-                    cols = st.columns(min(3,len(ov)))
+                    cols = st.columns(min(n_cols, len(ov)))
                     for i,(_, row) in enumerate(ov.iterrows()):
-                        with cols[i%3]: render_bloomberg_card(row, load_history(row['id']), "oth")
+                        with cols[i % n_cols]: render_bloomberg_card(row, load_history(row['id']), "oth", compact_mode)
             else:
                 if len(filtered)>0:
-                    cols = st.columns(min(3,len(filtered)))
+                    cols = st.columns(min(n_cols, len(filtered)))
                     for i,(_, row) in enumerate(filtered.iterrows()):
-                        with cols[i%3]: render_bloomberg_card(row, load_history(row['id']), "flt")
+                        with cols[i % n_cols]: render_bloomberg_card(row, load_history(row['id']), "flt", compact_mode)
                 else: st.info("No hay variables en esta categoría.")
 
             st.markdown("<br>", unsafe_allow_html=True)
