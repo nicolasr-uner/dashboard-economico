@@ -38,7 +38,31 @@ class BCBConnector(BaseConnector):
             data = self._get(url, params=params)
             return self._parse_response(data)
         except Exception as e:
-            logger.error(f"[bcb] fallo descargando serie {serie_id}: {e}")
+            # Fallback: algunas series antiguas del BCB (Selic, USD/BRL, CDI)
+            # no soportan fecha+formato conjuntos → usar /ultimos/N.
+            # BCB SGS limita N a ~50-99; probamos valores decrecientes.
+            logger.warning(f"[bcb] fallo con rango de fechas para serie {serie_id}, "
+                           f"intentando /ultimos fallback: {e}")
+            for n in (99, 75, 50, 30, 10):
+                try:
+                    url_ult = BCB_BASE.format(serie_id=serie_id) + f"/ultimos/{n}"
+                    data2 = self._get(url_ult, params={"formato": "json"})
+                    df = self._parse_response(data2)
+                    if not df.empty:
+                        df['date'] = pd.to_datetime(df['date'])
+                        inicio = pd.to_datetime(start_date)
+                        fim    = pd.to_datetime(end_date)
+                        mask = (df['date'] >= inicio) & (df['date'] <= fim)
+                        df_filtered = df[mask].reset_index(drop=True)
+                        logger.info(
+                            f"[bcb] fallback /ultimos/{n}: {len(df_filtered)} registros "
+                            f"(de {len(df)} totales) para serie {serie_id}"
+                        )
+                        return df_filtered if not df_filtered.empty else df
+                except Exception as e2:
+                    logger.debug(f"[bcb] /ultimos/{n} falló para serie {serie_id}: {e2}")
+                    continue
+            logger.error(f"[bcb] fallo total serie {serie_id}: todos los /ultimos/N fallaron")
             return self.empty_df()
 
     def _parse_response(self, data) -> pd.DataFrame:

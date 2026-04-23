@@ -156,3 +156,10 @@ def get_variables_by_name(var_name: str) -> pd.DataFrame:
             return pd.read_sql(query, conn, params={"var_name": var_name})
     except Exception:
         return pd.DataFrame()
+
+
+def save_manual_data_point(variable_id: int, date_val, value: float) -> bool:
+    """Wrapper para entrada manual desde el Data Hub."""
+    from datetime import date as date_type
+    date_str = date_val.strftime("%Y-%m-%d") if hasattr(date_val, 'strftime') else str(date_val)
+    return save_historical_data(variable_id, value, date_str, data_type='REAL_OFFICIAL')

@@ -1,8 +1,8 @@
 """
 chatbot.py — Asistente de Datos para el Cerebro Económico.
 Responde preguntas en lenguaje natural buscando en la base de datos.
-Si ANTHROPIC_API_KEY está disponible, usa Claude para respuestas enriquecidas.
-Si no, usa un sistema basado en patrones/templates.
+Si GEMINI_API_KEY está disponible, usa Gemini Flash para respuestas enriquecidas.
+Si no, usa un sistema basado en patrones/templates (sin costo).
 """
 import re
 import os
@@ -128,40 +128,38 @@ def _format_response(var_row: pd.Series, history_df: pd.DataFrame) -> str:
 
 
 def _llm_response(question: str, context: str) -> str:
-    """Usa Anthropic Claude si está disponible, de lo contrario retorna None."""
+    """Usa Gemini Flash si GEMINI_API_KEY está disponible, de lo contrario retorna None."""
     try:
-        api_key = os.getenv('ANTHROPIC_API_KEY', '')
+        api_key = os.getenv('GEMINI_API_KEY', '')
         if not api_key:
             try:
                 import streamlit as st
-                api_key = st.secrets.get('ANTHROPIC_API_KEY', '')
+                api_key = st.secrets.get('GEMINI_API_KEY', '')
             except Exception:
                 pass
         if not api_key:
             return None
 
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        system_prompt = (
-            "Eres el Asistente de Datos del Cerebro Económico NLA, una plataforma de "
-            "inteligencia macroeconómica para Colombia, México, Brasil y Ecuador. "
-            "Respondes preguntas sobre datos económicos de forma concisa y en español. "
-            "Siempre incluyes la fecha del dato, la fuente y un disclaimer breve. "
-            "Si no tienes datos concretos en el contexto, dilo honestamente."
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel(
+            model_name='gemini-2.0-flash',
+            system_instruction=(
+                "Eres el Asistente de Datos del Cerebro Económico NLA, una plataforma de "
+                "inteligencia macroeconómica para Colombia, México, Brasil y Ecuador. "
+                "Respondes preguntas sobre datos económicos de forma concisa y en español. "
+                "Siempre incluyes la fecha del dato, la fuente y un disclaimer breve. "
+                "Si no tienes datos concretos en el contexto, dilo honestamente."
+            )
         )
         user_message = f"Datos disponibles:\n{context}\n\nPregunta: {question}"
-        message = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=512,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_message}]
-        )
-        reply = message.content[0].text if message.content else None
+        response = model.generate_content(user_message)
+        reply = response.text if response.text else None
         if reply:
             return reply + "\n\n*Este análisis es informativo. Verifica los datos en la fuente oficial.*"
         return None
     except Exception as e:
-        logger.warning(f"[chatbot/llm] LLM no disponible: {e}")
+        logger.warning(f"[chatbot/llm] Gemini no disponible: {e}")
         return None
 
 
