@@ -19,14 +19,14 @@ def analyze_anomaly(variable, detected_change: float, previous_value: float, new
     except Exception:
         historial = "Sin datos históricos disponibles"
 
-    api_key = os.getenv('ANTHROPIC_API_KEY', '')
+    api_key = os.getenv('GEMINI_API_KEY', '')
     if not api_key:
         result = {
             'success': False,
             'verdict': 'indeterminado',
-            'justification': 'API key de Anthropic no configurada.',
+            'justification': 'GEMINI_API_KEY no configurada — análisis IA desactivado.',
             'risk_level': 'medio',
-            'recommendation': 'Configure la API key ANTHROPIC_API_KEY.',
+            'recommendation': 'Agrega GEMINI_API_KEY en .env (gratuito en ai.google.dev).',
             'news_context': ''
         }
         _save_log(variable, detected_change, result)
@@ -39,7 +39,7 @@ def analyze_anomaly(variable, detected_change: float, previous_value: float, new
     news_text_prompt = ""
     news_saved_context = ""
     if news_context_list:
-        news_text_prompt = "\nNoticias recientes (ChromaDB):\n"
+        news_text_prompt = "\nNoticias recientes:\n"
         for n in news_context_list:
             news_text_prompt += f"- {n['metadata']['title']}: {n['text']}\n"
             news_saved_context += f"- {n['metadata']['title']}\n"
@@ -60,28 +60,12 @@ Responde ÚNICAMENTE en JSON exacto:
   "recommendation": "Acción sugerida"
 }}"""
 
-    # Modelos en orden de preferencia
-    models_to_try = ["claude-3-5-haiku-20241022", "claude-3-haiku-20240307"]
-
     try:
-        import anthropic
-        client = anthropic.Anthropic(api_key=api_key)
-        message = None
-        for model_name in models_to_try:
-            try:
-                message = client.messages.create(
-                    model=model_name,
-                    max_tokens=300,
-                    messages=[{"role": "user", "content": prompt}]
-                )
-                break
-            except Exception:
-                continue
-
-        if message is None:
-            raise Exception("Ningún modelo de Claude disponible.")
-
-        response_text = message.content[0].text.strip()
+        import google.generativeai as genai
+        genai.configure(api_key=api_key)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(prompt)
+        response_text = response.text.strip()
 
         json_match = response_text
         if '```json' in response_text:
