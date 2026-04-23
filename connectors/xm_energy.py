@@ -1,6 +1,11 @@
 """
 xm_energy.py — Conector para XM Colombia (Mercado de Energía Mayorista).
-API pública sin autenticación. Endpoints: SIMEM y servapibi.xm.com.co.
+API pública sin autenticación: servapibi.xm.com.co
+
+Notas de actualización (2025-2026):
+  - Los MetricIds antiguos (DemaNal, GeneReal, PrecBolNac…) fueron renombrados.
+  - Varios pasaron del endpoint /daily al /hourly con estructura Hour01-Hour24.
+  - Los IDs actuales se obtienen con POST /lists {MetricId: 'ListadoMetricas'}.
 """
 import logging
 import pandas as pd
@@ -9,29 +14,39 @@ from connectors.base import BaseConnector
 
 logger = logging.getLogger(__name__)
 
-XM_API_BASE  = "https://servapibi.xm.com.co"
-SIMEM_BASE   = "https://www.simem.co/backend-files/api/GetDataset"
-SIMEM_BASE_V1 = "https://www.simem.co/backend-files/api/PublicData"  # fallback legacy
+XM_API_BASE = "https://servapibi.xm.com.co"
 
-# Mapeo de metric_id a tipo de endpoint (daily/monthly)
-# NOTA: La API de servapibi.xm.com.co actualizó sus metric IDs en 2025.
-# Solo los IDs verificados como funcionales están incluidos aquí.
-METRIC_ENDPOINTS = {
-    "AporEner":        ("daily",   "Sistema"),   # Aportes Hídricos — FUNCIONANDO
-    # Los siguientes IDs ya no son válidos en la API actual.
-    # Se intentará SIMEM como fallback.
-    "PrecBolNac":      ("daily",   "Sistema"),
-    "DemaNal":         ("daily",   "Sistema"),
-    "GeneReal":        ("daily",   "Sistema"),
-    "VolUtilDiari":    ("daily",   "Sistema"),
-    "GeneSolar":       ("daily",   "Sistema"),
-    "PrecPromContReg": ("monthly", "Sistema"),
-    "PrecEscworking":  ("monthly", "Sistema"),
-    "CERE":            ("monthly", "Sistema"),
+# Mapeo: serie_id usado en la DB → (nuevo_metric_id, endpoint, agregación)
+# endpoint: 'daily' | 'hourly'
+# agregación: 'sum' (energía kWh) | 'mean' (precio COP/kWh) | 'direct' (ya es diario)
+METRIC_MAP = {
+    # ── Activos y funcionando (endpoint /daily) ──────────────────────────────
+    "AporEner":        ("AporEner",         "daily",   "direct"),  # Aportes Hídricos kWh
+    "VoluUtilDiarEner":("VoluUtilDiarEner", "daily",   "direct"),  # Volumen Útil diario kWh
+    "PorcVoluUtilDiar":("PorcVoluUtilDiar", "daily",   "direct"),  # Volumen Útil diario %
+    "PrecEsca":        ("PrecEsca",         "daily",   "direct"),  # Precio Escasez COP/kWh
+    "PrecEscaAct":     ("PrecEscaAct",      "daily",   "direct"),  # Precio Escasez Activación
+
+    # ── IDs de DB antiguos → nuevos /daily ───────────────────────────────────
+    "VolUtilDiari":    ("VoluUtilDiarEner", "daily",   "direct"),  # Volumen Útil Diario
+    "PrecEscworking":  ("PrecEsca",         "daily",   "direct"),  # Precio Escasez (renombrado)
+
+    # ── Renombrados a /hourly ────────────────────────────────────────────────
+    "DemaNal":         ("DemaReal",         "hourly",  "sum"),     # Demanda Real kWh/día
+    "GeneReal":        ("Gene",             "hourly",  "sum"),     # Generación Total kWh/día
+    "PrecBolNac":      ("PrecBolsNaci",     "hourly",  "mean"),    # Precio Bolsa COP/kWh
+    "GeneSolar":       ("Gene",             "hourly",  "sum"),     # Generación (proxy total)
+
+    # ── /monthly ─────────────────────────────────────────────────────────────
+    "CERE":            ("CERE",             "monthly", "direct"),  # Cargo Energía Regulada
+    "PrecPromContReg": ("PrecPromContRegu", "hourly",  "mean"),    # Precio Promedio Contratos
+    "PrecPromContRegu":("PrecPromContRegu", "hourly",  "mean"),
+
+    # ── Alias directos con nuevos IDs ────────────────────────────────────────
+    "DemaReal":        ("DemaReal",         "hourly",  "sum"),
+    "Gene":            ("Gene",             "hourly",  "sum"),
+    "PrecBolsNaci":    ("PrecBolsNaci",     "hourly",  "mean"),
 }
-
-# IDs verificados como válidos en la API actual (2025)
-VALID_METRIC_IDS = {"AporEner"}
 
 
 class XMEnergyConnector(BaseConnector):
@@ -42,182 +57,133 @@ class XMEnergyConnector(BaseConnector):
     def fetch_series(self, serie_id: str, start_date: str, end_date: str) -> pd.DataFrame:
         """
         Descarga una serie de XM Colombia.
-        serie_id corresponde a MetricId (ej. 'PrecBolNac').
-        Retorna DataFrame ['date', 'value'].
+        serie_id: MetricId de la DB (puede ser el nombre antiguo o nuevo).
+        Retorna DataFrame ['date', 'value'] con granularidad diaria.
         """
-        # XM API tiene límite de 30 días por request — iterar si el rango es mayor
         try:
             sd = datetime.strptime(start_date, "%Y-%m-%d")
             ed = datetime.strptime(end_date, "%Y-%m-%d")
         except ValueError:
+            logger.error(f"[xm] Formato de fecha inválido: {start_date} / {end_date}")
             return self.empty_df()
 
-        freq, entity = METRIC_ENDPOINTS.get(serie_id, ("daily", "Sistema"))
-        endpoint_type = freq  # 'daily' o 'monthly'
+        # Resolver el metric_id actual y endpoint
+        if serie_id not in METRIC_MAP:
+            logger.warning(f"[xm] MetricId desconocido: {serie_id}")
+            return self.empty_df()
 
+        new_metric_id, endpoint_type, agg = METRIC_MAP[serie_id]
+
+        # XM limita a 30 días por request (hourly/daily); monthly acepta más
+        chunk_days = 731 if endpoint_type == "monthly" else 30
         all_dfs = []
-        # Partir en chunks de 30 días para el endpoint diario
-        chunk_days = 30 if endpoint_type == "daily" else 365
         current = sd
-
-        # Si el metric_id no está en los IDs validados, saltar directo a SIMEM
-        if serie_id not in VALID_METRIC_IDS:
-            df_simem = self._fetch_simem(serie_id, start_date, end_date)
-            if not df_simem.empty:
-                return df_simem
-            logger.warning(f"[xm] Serie {serie_id} no disponible en API actual ni en SIMEM.")
-            return self.empty_df()
 
         while current <= ed:
             chunk_end = min(current + timedelta(days=chunk_days - 1), ed)
             df_chunk = self._fetch_chunk(
-                serie_id, current.strftime("%Y-%m-%d"),
-                chunk_end.strftime("%Y-%m-%d"), endpoint_type, entity
+                new_metric_id,
+                current.strftime("%Y-%m-%d"),
+                chunk_end.strftime("%Y-%m-%d"),
+                endpoint_type,
+                agg
             )
             if not df_chunk.empty:
                 all_dfs.append(df_chunk)
             current = chunk_end + timedelta(days=1)
 
         if not all_dfs:
-            # Intentar SIMEM como fallback
-            df_simem = self._fetch_simem(serie_id, start_date, end_date)
-            if not df_simem.empty:
-                return df_simem
-            logger.warning(f"[xm] Serie {serie_id} sin datos disponibles.")
+            logger.warning(f"[xm] Serie {serie_id} ({new_metric_id}) sin datos.")
             return self.empty_df()
 
         combined = pd.concat(all_dfs, ignore_index=True).drop_duplicates(subset='date')
         combined = combined.sort_values('date').reset_index(drop=True)
-        logger.info(f"[xm] {serie_id}: {len(combined)} registros descargados.")
+        logger.info(f"[xm] {serie_id} → {new_metric_id}: {len(combined)} registros.")
         return combined
 
     def _fetch_chunk(self, metric_id: str, start: str, end: str,
-                     endpoint_type: str, entity: str) -> pd.DataFrame:
-        """Llama al endpoint de XM API para un chunk de fechas."""
+                     endpoint_type: str, agg: str) -> pd.DataFrame:
+        """Llama al endpoint XM y agrega la respuesta a granularidad diaria."""
         url = f"{XM_API_BASE}/{endpoint_type}"
         body = {
             "MetricId": metric_id,
             "StartDate": start,
             "EndDate": end,
-            "Entity": entity
+            "Entity": "Sistema"
         }
         try:
             data = self._post(url, json_body=body)
-            return self._parse_xm_response(data, metric_id)
+            if endpoint_type == "hourly":
+                return self._parse_hourly(data, agg)
+            else:
+                # daily and monthly have the same structure; only the entities key differs
+                entities_key = "MonthlyEntities" if endpoint_type == "monthly" else "DailyEntities"
+                return self._parse_daily(data, entities_key=entities_key)
         except Exception as e:
             logger.warning(f"[xm] chunk {metric_id} {start}–{end} falló: {e}")
             return self.empty_df()
 
-    def _fetch_simem(self, metric_id: str, start_date: str, end_date: str) -> pd.DataFrame:
-        """Fallback: consultar SIMEM (portal de datos abiertos de energía) v2 y v1."""
-        SIMEM_DATASETS = {
-            "PrecBolNac":   "PrecBolNal",
-            "DemaNal":      "DemaNal",
-            "GeneReal":     "GeneReal",
-            "AporEner":     "AporHidEnerg",
-            "VolUtilDiari": "VolUtilEmb",
-        }
-        dataset_id = SIMEM_DATASETS.get(metric_id)
-        if not dataset_id:
-            return self.empty_df()
+    # ── Parsers ──────────────────────────────────────────────────────────────
 
-        # Intentar SIMEM v2 primero
-        params_v2 = {
-            "startDate": start_date,
-            "endDate": end_date,
-            "datasetId": dataset_id,
-            "format": "json"
-        }
+    def _parse_daily(self, data, entities_key: str = "DailyEntities") -> pd.DataFrame:
+        """Parsear respuesta /daily o /monthly: Items[{Date, <entities_key>:[{Id, Value}]}]"""
         try:
-            data = self._get(SIMEM_BASE, params=params_v2)
-            df = self._parse_simem_response(data)
-            if not df.empty:
-                return df
-        except Exception as e:
-            logger.warning(f"[xm/simem-v2] {metric_id} falló: {e}")
-
-        # Intentar SIMEM v1 legacy
-        legacy_ids = {"PrecBolNac": "1", "DemaNal": "3"}
-        legacy_id = legacy_ids.get(metric_id)
-        if legacy_id:
-            params_v1 = {"startDate": start_date, "endDate": end_date, "datasetId": legacy_id}
-            try:
-                data = self._get(SIMEM_BASE_V1, params=params_v1)
-                df = self._parse_simem_response(data)
-                if not df.empty:
-                    return df
-            except Exception as e:
-                logger.warning(f"[xm/simem-v1] {metric_id} falló: {e}")
-
-        return self.empty_df()
-
-    def _parse_xm_response(self, data, metric_id: str) -> pd.DataFrame:
-        """Parsear respuesta de servapibi.xm.com.co."""
-        try:
-            items = (data if isinstance(data, list)
-                     else data.get('Items', data.get('items',
-                          data.get('Values', data.get('values',
-                          data.get('data', data.get('records', [])))))))
-            if not items:
-                return self.empty_df()
-
+            items = data.get('Items', []) if isinstance(data, dict) else data
             records = []
             for item in items:
-                # Posibles keys de fecha y valor
-                fecha = (item.get('Date') or item.get('date') or
-                         item.get('StartDate') or item.get('HourStartDate', '')[:10])
-
-                # Formato nuevo: DailyEntities/HourlyEntities con lista [{Id, Value}]
-                valor = None
-                for entities_key in ('DailyEntities', 'HourlyEntities', 'MonthlyEntities'):
-                    entities = item.get(entities_key)
-                    if entities and isinstance(entities, list):
-                        # Sumar todos los valores (o tomar el primero si es por entidad)
+                date_str = item.get('Date', '')[:10]
+                entities = item.get(entities_key, [])
+                for ent in entities:
+                    if ent.get('Id') == 'Sistema':
                         try:
-                            valor = sum(float(e.get('Value', 0) or 0) for e in entities if e.get('Value') is not None)
+                            val = float(ent.get('Value', 0) or 0)
+                            records.append({'date': pd.to_datetime(date_str), 'value': val})
                         except (ValueError, TypeError):
                             pass
                         break
-
-                # Formato legado: Value directo
-                if valor is None:
-                    valor = (item.get('Value') or item.get('value') or
-                             item.get('Total') or item.get(metric_id))
-
-                if fecha and valor is not None:
-                    try:
-                        records.append({'date': pd.to_datetime(str(fecha)[:10]), 'value': float(valor)})
-                    except (ValueError, TypeError):
-                        continue
-
             if not records:
                 return self.empty_df()
-
-            df = pd.DataFrame(records)
-            # Agregar por fecha (promedio diario si hay múltiples horas)
-            df = df.groupby('date', as_index=False)['value'].mean()
-            return df.sort_values('date').reset_index(drop=True)
+            return pd.DataFrame(records).sort_values('date').reset_index(drop=True)
         except Exception as e:
-            logger.error(f"[xm] Error parseando respuesta: {e}")
+            logger.error(f"[xm] Error parseando /{entities_key}: {e}")
             return self.empty_df()
 
-    def _parse_simem_response(self, data) -> pd.DataFrame:
-        """Parsear respuesta de SIMEM."""
+    def _parse_hourly(self, data, agg: str) -> pd.DataFrame:
+        """
+        Parsear respuesta /hourly: Items[{Date, HourlyEntities:[{Id, Values:{Hour01..Hour24}}]}]
+        Agregar las 24 horas según agg ('sum' o 'mean').
+        """
         try:
-            records_raw = data.get('data', data.get('records', []))
-            if not records_raw:
+            items = data.get('Items', []) if isinstance(data, dict) else data
+            records = []
+            for item in items:
+                date_str = item.get('Date', '')[:10]
+                entities = item.get('HourlyEntities', [])
+                for ent in entities:
+                    if ent.get('Id') == 'Sistema':
+                        vals_dict = ent.get('Values', {})
+                        hour_values = []
+                        for h in range(1, 25):
+                            hkey = f'Hour{h:02d}'
+                            raw = vals_dict.get(hkey)
+                            if raw is not None:
+                                try:
+                                    hour_values.append(float(raw))
+                                except (ValueError, TypeError):
+                                    pass
+                        if hour_values:
+                            if agg == 'sum':
+                                daily_val = sum(hour_values)
+                            else:  # mean
+                                daily_val = sum(hour_values) / len(hour_values)
+                            records.append({
+                                'date': pd.to_datetime(date_str),
+                                'value': daily_val
+                            })
+                        break
+            if not records:
                 return self.empty_df()
-            df = pd.DataFrame(records_raw)
-            # Intentar detectar columnas de fecha y valor
-            date_col = next((c for c in df.columns if 'fecha' in c.lower() or 'date' in c.lower()), None)
-            val_col = next((c for c in df.columns if 'valor' in c.lower() or 'value' in c.lower() or 'precio' in c.lower()), None)
-            if not date_col or not val_col:
-                return self.empty_df()
-            df = df[[date_col, val_col]].rename(columns={date_col: 'date', val_col: 'value'})
-            df['date'] = pd.to_datetime(df['date'], errors='coerce')
-            df['value'] = pd.to_numeric(df['value'], errors='coerce')
-            df = df.dropna().sort_values('date').reset_index(drop=True)
-            return df
+            return pd.DataFrame(records).sort_values('date').reset_index(drop=True)
         except Exception as e:
-            logger.error(f"[xm/simem] Error parseando: {e}")
+            logger.error(f"[xm] Error parseando /hourly: {e}")
             return self.empty_df()
