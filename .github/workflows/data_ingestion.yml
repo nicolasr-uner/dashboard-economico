@@ -1,0 +1,36 @@
+name: Data Ingestion Pipeline
+
+on:
+  schedule:
+    # Corre todos los días a las 6:00 AM UTC (1:00 AM Colombia)
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    # Permite ejecución manual desde GitHub UI
+
+jobs:
+  ingest_data:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout del código
+      uses: actions/checkout@v4
+
+    - name: Configurar Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+
+    - name: Instalar dependencias
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Ejecutar script de ingesta (Backfill)
+      env:
+        DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+        BANXICO_TOKEN: ${{ secrets.BANXICO_TOKEN }}
+      run: |
+        # Usamos el script backfill.py para forzar una sincronización
+        python scripts/backfill.py --days 7 --headless

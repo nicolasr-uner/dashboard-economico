@@ -67,14 +67,12 @@ def forecast_arima(series: pd.Series, periods: int = 6) -> dict:
         fit_model = model.fit()
         
         # Obtener predicciones con intervalos (alpha=0.2 para 80%, alpha=0.05 para 95%)
-        pred_80 = fit_model.get_forecast(steps=periods)
-        pred_95 = fit_model.get_forecast(steps=periods)
-        
-        conf_int_80 = pred_80.conf_int(alpha=0.2)
-        conf_int_95 = pred_95.conf_int(alpha=0.05)
-        
+        pred = fit_model.get_forecast(steps=periods)
+        conf_int_80 = pred.conf_int(alpha=0.2)
+        conf_int_95 = pred.conf_int(alpha=0.05)
+
         return {
-            'forecast': pred_80.predicted_mean.values,
+            'forecast': pred.predicted_mean.values,
             'model_name': 'ARIMA',
             'lower_80': conf_int_80.iloc[:, 0].values,
             'upper_80': conf_int_80.iloc[:, 1].values,

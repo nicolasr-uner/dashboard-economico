@@ -1,11 +1,10 @@
 """
-seed_variables_v3.py — Catálogo completo expandido basado en:
- - Modelo financiero Exagon 13 Minifarms
- - Modelo Tax Partner Ruitoque
- - Variables macroeconómicas completas para Colombia, México, Brasil, Ecuador
- - Variables de Finanzas Corporativas Unergy (solar)
-Ejecutar: python scripts/seed_variables_v3.py
+DEPRECADO — No ejecutar este script. Usa seed_variables_v4.py que es idempotente
+y tiene el catálogo actualizado incluyendo variables de Ecuador con conector BCE.
 """
+raise SystemExit(
+    "❌ seed_variables_v3.py está DEPRECADO. Usa: python scripts/seed_variables_v4.py"
+)
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

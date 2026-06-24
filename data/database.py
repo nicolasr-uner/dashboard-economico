@@ -1,114 +1,110 @@
 import pandas as pd
 from datetime import datetime
-from models.db import engine
-from sqlalchemy import text
-
+from sqlalchemy import select, desc
+from models.db import engine, SessionLocal
+from models.schema import Country, MacroVariable, TimeSeriesData, AIAnalysisLog
 
 def get_countries() -> pd.DataFrame:
-    """Obtiene la lista de países configurados."""
-    query = text("SELECT id, name, code, flag_emoji FROM dim_country ORDER BY name;")
+    """Obtiene la lista de países configurados usando ORM."""
     try:
-        with engine.connect() as conn:
-            return pd.read_sql(query, conn)
+        with SessionLocal() as session:
+            stmt = select(Country.id, Country.name, Country.code, Country.flag_emoji).order_by(Country.name)
+            return pd.read_sql(stmt, session.bind)
     except Exception as e:
         print(f"Error reading countries: {e}")
         return pd.DataFrame()
 
 
 def get_variables(country_id: int | None = None) -> pd.DataFrame:
-    """Obtiene las variables macroeconómicas activas."""
+    """Obtiene las variables macroeconómicas activas usando ORM."""
     try:
-        with engine.connect() as conn:
+        with SessionLocal() as session:
+            stmt = select(MacroVariable).where(MacroVariable.is_active == True)
             if country_id:
-                query = text(
-                    "SELECT * FROM dim_variable WHERE is_active = 1 AND country_id = :country_id ORDER BY name;"
-                )
-                return pd.read_sql(query, conn, params={"country_id": country_id})
-            else:
-                query = text("SELECT * FROM dim_variable WHERE is_active = 1 ORDER BY name;")
-                return pd.read_sql(query, conn)
+                stmt = stmt.where(MacroVariable.country_id == country_id)
+            stmt = stmt.order_by(MacroVariable.name)
+            return pd.read_sql(stmt, session.bind)
     except Exception as e:
         print(f"Error reading variables: {e}")
         return pd.DataFrame()
 
 
 def get_historical_data(variable_id: int) -> pd.DataFrame:
-    """Obtiene la serie temporal de datos históricos de una variable."""
-    query = text(
-        """
-        SELECT date, value, data_type
-        FROM fact_timeseries
-        WHERE variable_id = :variable_id
-        ORDER BY date ASC;
-        """
-    )
+    """Obtiene la serie temporal de datos históricos de una variable usando ORM."""
     try:
-        with engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={"variable_id": variable_id})
-        if not df.empty:
-            df['date'] = pd.to_datetime(df['date'])
-        return df
-    except Exception:
+        with SessionLocal() as session:
+            stmt = select(TimeSeriesData.date, TimeSeriesData.value, TimeSeriesData.data_type)\
+                   .where(TimeSeriesData.variable_id == variable_id)\
+                   .order_by(TimeSeriesData.date.asc())
+            df = pd.read_sql(stmt, session.bind)
+            if not df.empty:
+                df['date'] = pd.to_datetime(df['date'])
+            return df
+    except Exception as e:
+        print(f"Error reading historical data: {e}")
         return pd.DataFrame()
 
 
 def get_last_known_value(variable_id: int) -> dict | None:
     """Devuelve el dato más reciente disponible, sin filtro de fechas. Usado como fallback."""
-    query = text(
-        "SELECT value, date FROM fact_timeseries "
-        "WHERE variable_id = :variable_id ORDER BY date DESC LIMIT 1;"
-    )
     try:
-        with engine.connect() as conn:
-            df = pd.read_sql(query, conn, params={"variable_id": variable_id})
-        if not df.empty:
-            return {
-                'value': float(df.iloc[0]['value']),
-                'date': pd.to_datetime(df.iloc[0]['date'])
-            }
-    except Exception:
-        pass
+        with SessionLocal() as session:
+            res = session.execute(
+                select(TimeSeriesData.value, TimeSeriesData.date)
+                .where(TimeSeriesData.variable_id == variable_id)
+                .order_by(desc(TimeSeriesData.date))
+                .limit(1)
+            ).first()
+            
+            if res:
+                return {
+                    'value': float(res.value),
+                    'date': pd.to_datetime(res.date)
+                }
+    except Exception as e:
+        print(f"Error reading last known value: {e}")
     return None
 
 
 def save_historical_data(variable_id: int, value: float, date_str: str, data_type: str = 'REAL_OFFICIAL') -> bool:
-    """Guarda un nuevo registro histórico. Compatible con SQLite y PostgreSQL+TimescaleDB."""
+    """Guarda un nuevo registro histórico usando UPSERT nativo de SQLAlchemy (PostgreSQL / SQLite)."""
     try:
         date_obj = datetime.strptime(date_str, "%Y-%m-%d")
-
-        # SQLite usa INSERT OR REPLACE; PostgreSQL usa ON CONFLICT ... DO UPDATE
-        try:
-            query = text(
-                """
-                INSERT INTO fact_timeseries (variable_id, value, date, data_type, is_anomaly, version_timestamp)
-                VALUES (:variable_id, :value, :date, :data_type, 0, CURRENT_TIMESTAMP)
-                ON CONFLICT (variable_id, date, data_type)
-                DO UPDATE SET value=EXCLUDED.value, version_timestamp=CURRENT_TIMESTAMP;
-                """
-            )
-            with engine.begin() as conn:
-                conn.execute(query, {
-                    "variable_id": variable_id,
-                    "value": value,
-                    "date": date_obj,
-                    "data_type": data_type
-                })
-        except Exception:
-            # Fallback para SQLite
-            query = text(
-                """
-                INSERT OR REPLACE INTO fact_timeseries (variable_id, value, date, data_type, is_anomaly, version_timestamp)
-                VALUES (:variable_id, :value, :date, :data_type, 0, CURRENT_TIMESTAMP);
-                """
-            )
-            with engine.begin() as conn:
-                conn.execute(query, {
-                    "variable_id": variable_id,
-                    "value": value,
-                    "date": date_obj,
-                    "data_type": data_type
-                })
-        return True
+        is_postgres = engine.name == 'postgresql'
+        
+        with SessionLocal() as session:
+            if is_postgres:
+                from sqlalchemy.dialects.postgresql import insert
+                stmt = insert(TimeSeriesData).values(
+                    variable_id=variable_id,
+                    value=value,
+                    date=date_obj,
+                    data_type=data_type,
+                    is_anomaly=False,
+                    version_timestamp=datetime.utcnow()
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['variable_id', 'date', 'data_type'],
+                    set_=dict(value=stmt.excluded.value, version_timestamp=datetime.utcnow())
+                )
+            else:
+                from sqlalchemy.dialects.sqlite import insert
+                stmt = insert(TimeSeriesData).values(
+                    variable_id=variable_id,
+                    value=value,
+                    date=date_obj,
+                    data_type=data_type,
+                    is_anomaly=False,
+                    version_timestamp=datetime.utcnow()
+                )
+                stmt = stmt.on_conflict_do_update(
+                    index_elements=['variable_id', 'date', 'data_type'],
+                    set_=dict(value=stmt.excluded.value, version_timestamp=datetime.utcnow())
+                )
+            
+            session.execute(stmt)
+            session.commit()
+            return True
     except Exception as e:
         print(f"Error al guardar datos: {e}")
         return False
@@ -116,45 +112,33 @@ def save_historical_data(variable_id: int, value: float, date_str: str, data_typ
 
 def get_ai_logs(variable_id: int) -> pd.DataFrame:
     """Obtiene el último log de análisis IA para una variable."""
-    query = text(
-        """
-        SELECT * FROM ai_analysis_log
-        WHERE variable_id = :variable_id
-        ORDER BY analyzed_at DESC
-        LIMIT 1;
-        """
-    )
     try:
-        with engine.connect() as conn:
-            return pd.read_sql(query, conn, params={"variable_id": variable_id})
-    except Exception:
+        with SessionLocal() as session:
+            stmt = select(AIAnalysisLog).where(AIAnalysisLog.variable_id == variable_id).order_by(desc(AIAnalysisLog.analyzed_at)).limit(1)
+            return pd.read_sql(stmt, session.bind)
+    except Exception as e:
         return pd.DataFrame()
 
 
 def get_all_variable_names() -> pd.DataFrame:
-    """Obtiene todos los nombres únicos de variables (para comparativa regional)."""
-    query = text("SELECT DISTINCT name FROM dim_variable ORDER BY name;")
+    """Obtiene todos los nombres únicos de variables."""
     try:
-        with engine.connect() as conn:
-            return pd.read_sql(query, conn)
-    except Exception:
+        with SessionLocal() as session:
+            stmt = select(MacroVariable.name).distinct().order_by(MacroVariable.name)
+            return pd.read_sql(stmt, session.bind)
+    except Exception as e:
         return pd.DataFrame()
 
 
 def get_variables_by_name(var_name: str) -> pd.DataFrame:
     """Obtiene todas las instancias de una variable (por nombre) con su país."""
-    query = text(
-        """
-        SELECT v.id, v.name, c.name as country
-        FROM dim_variable v
-        JOIN dim_country c ON v.country_id = c.id
-        WHERE v.name = :var_name;
-        """
-    )
     try:
-        with engine.connect() as conn:
-            return pd.read_sql(query, conn, params={"var_name": var_name})
-    except Exception:
+        with SessionLocal() as session:
+            stmt = select(MacroVariable.id, MacroVariable.name, Country.name.label('country'))\
+                   .join(Country, MacroVariable.country_id == Country.id)\
+                   .where(MacroVariable.name == var_name)
+            return pd.read_sql(stmt, session.bind)
+    except Exception as e:
         return pd.DataFrame()
 
 

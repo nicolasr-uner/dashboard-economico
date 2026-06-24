@@ -3,6 +3,7 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date
+import difflib
 import io
 import os
 import streamlit.components.v1 as _stcomponents
@@ -93,11 +94,20 @@ def load_all_variables():            return get_variables()
 def load_last_known(variable_id):    return get_last_known_value(variable_id)
 
 @st.cache_data(ttl=3600)
-def _cached_proj(var_id: int, periods: int = 6):
+def _cached_proj(var_id: int, periods: int = 6, frequency: str = 'monthly'):
     try:
         h = load_history(var_id)
         if h.empty or len(h) < 3: return None
-        return VariableAgent.calculate_projection(h, periods=periods)
+        # Ajustar períodos de proyección según la frecuencia natural del dato
+        freq_periods = {
+            'daily': 30,       # 30 días hacia adelante
+            'weekly': 12,      # 12 semanas (~3 meses)
+            'monthly': 6,      # 6 meses
+            'quarterly': 4,    # 4 trimestres (1 año)
+            'annual': 3,       # 3 años
+        }
+        adjusted_periods = freq_periods.get(frequency, periods)
+        return VariableAgent.calculate_projection(h, periods=adjusted_periods)
     except Exception: return None
 
 # ── Frecuencia natural del dato ───────────────────────────────────────────────
@@ -345,12 +355,19 @@ def render_bloomberg_card(row, hist, key_prefix="card", compact=False):
             last_date = hist_full['date'].iloc[-1]
             days_old  = (datetime.now() - last_date).days
 
-            # ── Cabecera: badge + etiqueta frecuencia + rango ─────────────
+            # ── Cabecera: badge + frecuencia + staleness dot + rango ─────────
+            staleness_dot = (
+                "<span style='color:#ef4444;font-size:0.75em' title='Datos con más de 30 días'>🔴</span>"
+                if days_old > 30 else
+                "<span style='color:#f59e0b;font-size:0.75em' title='Datos de hace 7-30 días'>🟡</span>"
+                if days_old > 7 else
+                "<span style='color:#10b981;font-size:0.75em' title='Datos recientes'>🟢</span>"
+            )
             hc1, hc2 = st.columns([1, 2])
             with hc1:
                 st.markdown(
                     f"{badge_html(ct)} "
-                    f"<span class='bb-freq-tag'>{freq_lbl}</span>",
+                    f"<span class='bb-freq-tag'>{freq_lbl}</span> {staleness_dot}",
                     unsafe_allow_html=True)
             with hc2:
                 # Selector de rango como radio compacto
@@ -386,7 +403,7 @@ def render_bloomberg_card(row, hist, key_prefix="card", compact=False):
             # Proyección solo si rango ≥ 1A y hay suficientes datos
             try:
                 if active_rng in ('1A','2A','5A','MAX') and len(hist_full) >= 6:
-                    proj = _cached_proj(var_id, 3)
+                    proj = _cached_proj(var_id, 3, nat_freq)
                     if proj is not None and not proj.empty:
                         if 'lower_80' in proj.columns:
                             xb = list(proj['date']) + list(reversed(list(proj['date'])))
@@ -436,12 +453,19 @@ def render_bloomberg_card(row, hist, key_prefix="card", compact=False):
                     f"<div class='bb-stale'>⚠️ Último: {lkg_date.strftime('%d %b %Y')} ({days_old}d)</div>",
                     unsafe_allow_html=True)
             else:
+                src = row.get('api_provider') or ''
+                ct_type = row.get('connector_type', 'MANUAL')
+                if ct_type == 'MANUAL':
+                    hint = "Usa **Entrada manual** en Data Hub para cargar valores."
+                elif src:
+                    hint = f"Conector `{src.upper()}` configurado. Usa **🔄 Forzar actualización** en Data Hub."
+                else:
+                    hint = "Variable pendiente de configuración de fuente."
                 st.markdown(
                     f"<div class='bb-ticker'>{row['name']}</div>"
-                    f"<div style='color:#9ca3af;font-size:0.9em;padding:6px 0'>📊 Pendiente de datos</div>",
+                    f"<div style='color:#9ca3af;font-size:0.85em;padding:6px 0'>"
+                    f"📊 Sin datos — {hint}</div>",
                     unsafe_allow_html=True)
-                src = row.get('api_provider') or row.get('connector_type','')
-                if src: st.caption(f"Fuente configurada: **{str(src).upper()}**")
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 def render_sidebar(countries_df):
@@ -545,15 +569,46 @@ def main():
     variables_df     = load_variables(sel_id)
     _all_v           = load_all_variables()
 
-    # ── Búsqueda global ───────────────────────────────────────────────────────
+    # ── Panel de onboarding (colapsable) ─────────────────────────────────────
+    if not st.session_state.get('onboarding_dismissed', False):
+        with st.expander("💡 ¿Cómo usar este dashboard? (click para colapsar)", expanded=False):
+            st.markdown("""
+**Navegación rápida**
+- Usa las **pestañas** para navegar entre vistas: *Dashboard* (tarjetas por país) · *Proyecciones* (consensus + modelo estadístico) · *LATAM* (comparación regional) · *Energía* (mercados eléctricos).
+- El **selector de país** en el sidebar cambia las tarjetas del Dashboard.
+
+**Tarjetas Bloomberg**
+- Cada tarjeta tiene su propio **selector de rango** (1M · 3M · 6M · 1A · 2A · 5A · MAX). El default se elige según la frecuencia del dato.
+- El punto de color (🟢🟡🔴) indica la antigüedad del último dato: verde < 7 días, amarillo < 30, rojo > 30.
+- El botón **"Ver detalle →"** abre un panel con KPIs históricos, gráfico ampliado y proyecciones.
+
+**Proyecciones**
+- La **línea naranja punteada** en los gráficos es la proyección estadística (Ensemble Holt-Winters + ARIMA).
+- El tab **Proyecciones** superpone también las proyecciones de instituciones (IMF, BanRep, Bancolombia, Goldman Sachs, etc.) con distintos marcadores.
+
+**Actualización de datos**
+- En el tab **Data Hub** puedes forzar la actualización de cualquier variable o cargar datos manualmente.
+            """)
+            if st.button("✅ Entendido, no mostrar de nuevo", key="dismiss_onboarding"):
+                st.session_state['onboarding_dismissed'] = True
+                st.rerun()
+
+    # ── Búsqueda global con fuzzy matching ────────────────────────────────────
     if not _all_v.empty:
         all_names = sorted(_all_v['name'].dropna().unique().tolist())
         sc1, sc2 = st.columns([3, 1])
         with sc1:
-            search_q = st.text_input("", placeholder="🔍  Buscar variable  (ej: TRM, IPC, PIB, Selic...)",
+            search_q = st.text_input("", placeholder="🔍  Buscar variable  (ej: TRM, IPC, PIB, Selic, WACC...)",
                                      label_visibility="collapsed", key="global_search")
         if search_q.strip():
-            matches = [n for n in all_names if search_q.strip().lower() in n.lower()]
+            q = search_q.strip().lower()
+            # Coincidencia exacta parcial primero, luego fuzzy
+            exact_matches = [n for n in all_names if q in n.lower()]
+            fuzzy_matches = difflib.get_close_matches(q, [n.lower() for n in all_names],
+                                                       n=5, cutoff=0.4)
+            fuzzy_names = [all_names[[n.lower() for n in all_names].index(m)]
+                           for m in fuzzy_matches if m not in [n.lower() for n in exact_matches]]
+            matches = exact_matches + [n for n in fuzzy_names if n not in exact_matches]
             if matches:
                 with sc2:
                     pick = st.selectbox("", matches, label_visibility="collapsed", key="search_pick")
@@ -565,7 +620,7 @@ def main():
                                          r.get('unit',''), r.get('connector_type','API'),
                                          r.get('source_url','#'), r.get('description',''), nat_f)
             else:
-                st.caption(f"Sin resultados para «{search_q}»")
+                st.caption(f"Sin resultados para «{search_q}» — intenta con: TRM, IPC, Selic, PIB, WACC")
 
     # Tabs dinámicos
     _show_corp  = False; _show_latam = False
@@ -579,22 +634,25 @@ def main():
                 cwd.add(lv['country_id'])
                 if len(cwd) >= 2: _show_latam = True; break
 
-    labels = ["🌍 Global", "📊 Vista General", "⚡ Energía"]
-    if _show_latam: labels.append("🌎 América Latina")
-    labels += ["🔮 Proyecciones", "📚 Data Hub", "📋 Exportación"]
-    if _show_corp: labels.append("🏢 Finanzas Corp.")
-    labels.append("🤖 Asistente")
+    # Tier 1: Análisis principal
+    labels = ["📊 Dashboard", "🔮 Proyecciones", "🌎 Comparación LATAM", "⚡ Mercados Energía"]
+    # Tier 2: Contexto global y finanzas
+    labels.append("🌍 Contexto Global")
+    if _show_corp: labels.append("🏢 Finanzas de Proyectos")
+    # Tier 3: Herramientas
+    labels += ["📚 Data Hub", "📋 Exportar Datos", "🤖 Asistente IA"]
 
+    # Nuevo orden: Dashboard | Proyecciones | LATAM | Energía | Global | [Corp] | Data Hub | Exportar | Asistente
     tabs = st.tabs(labels); ti=0
-    tab_global  = tabs[ti]; ti+=1
-    tab_vista   = tabs[ti]; ti+=1
-    tab_energy  = tabs[ti]; ti+=1
-    tab_latam   = tabs[ti] if _show_latam else None; ti+=(1 if _show_latam else 0)
-    tab_proj    = tabs[ti]; ti+=1
-    tab_hub     = tabs[ti]; ti+=1
-    tab_export  = tabs[ti]; ti+=1
-    tab_corp    = tabs[ti] if _show_corp else None;  ti+=(1 if _show_corp else 0)
-    tab_agent   = tabs[ti]
+    tab_vista   = tabs[ti]; ti+=1   # 📊 Dashboard
+    tab_proj    = tabs[ti]; ti+=1   # 🔮 Proyecciones
+    tab_latam   = tabs[ti]; ti+=1   # 🌎 Comparación LATAM
+    tab_energy  = tabs[ti]; ti+=1   # ⚡ Mercados Energía
+    tab_global  = tabs[ti]; ti+=1   # 🌍 Contexto Global
+    tab_corp    = tabs[ti] if _show_corp else None; ti+=(1 if _show_corp else 0)  # 🏢 Finanzas de Proyectos
+    tab_hub     = tabs[ti]; ti+=1   # 📚 Data Hub
+    tab_export  = tabs[ti]; ti+=1   # 📋 Exportar Datos
+    tab_agent   = tabs[ti]          # 🤖 Asistente IA
 
     # ════════════════════════════════════════════════════════════════════════
     # GLOBAL
@@ -1109,8 +1167,21 @@ def main():
                         vrf=ahub[ahub['id']==sr_h['_id']].iloc[0]
                         with st.spinner(f"Actualizando {sv_h}..."):
                             res=VariableAgent.ingest_variable(vrf)
-                            if res.get('success'): st.success("✅ "+res.get('message','OK')); load_history.clear()
-                            else: st.error(res.get('error','Error'))
+                            if res.get('success'):
+                                st.success("✅ "+res.get('message','Actualización exitosa'))
+                                load_history.clear()
+                                load_last_known.clear()
+                            else:
+                                err = res.get('error', 'Error desconocido')
+                                provider = str(vrf.get('api_provider') or '').upper()
+                                if 'token' in err.lower() or 'api_key' in err.lower() or 'unauthorized' in err.lower():
+                                    st.error(f"🔑 **{provider}** requiere clave API. Configura la variable de entorno correspondiente en tu archivo `.env`.")
+                                elif 'timeout' in err.lower() or 'connection' in err.lower():
+                                    st.error(f"🌐 **Timeout** conectando a {provider}. Verifica tu conexión o intenta más tarde.")
+                                elif 'not found' in err.lower() or '404' in err:
+                                    st.error(f"📭 Serie no encontrada en **{provider}**. El `api_serie_id` puede estar desactualizado.")
+                                else:
+                                    st.error(f"❌ {err}")
 
             st.divider()
             with st.expander("🗺️ Checklist de brechas por país", expanded=False):

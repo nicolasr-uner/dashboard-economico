@@ -492,6 +492,43 @@ ALL_VARIABLES = [
          connector_type="MANUAL", api_provider=None, api_serie_id=None,
          source_url="https://www.arconel.gob.ec/pliego-tarifario/",
          description="Tarifa eléctrica industrial regulada Ecuador en USD/kWh - ARCERNNR. Referencia autogeneración"),
+
+    # ── Ecuador: variables críticas faltantes ─────────────────────────────────
+    dict(country=ecuador, name="Desempleo EC",
+         unit="%", frequency="quarterly", category="macro",
+         connector_type="API", api_provider="bce", api_serie_id="Desempleo",
+         source_url="https://www.ecuadorencifras.gob.ec/empleo-subempleo-y-desempleo/",
+         description="Tasa de desempleo Ecuador % - INEC. Levantamiento trimestral (ENEMDU)"),
+
+    dict(country=ecuador, name="Deficit Fiscal EC (% PIB)",
+         unit="% PIB", frequency="annual", category="fiscal",
+         connector_type="API", api_provider="bce", api_serie_id="DeficitFiscal",
+         source_url="https://www.finanzas.gob.ec/estadisticas/",
+         description="Déficit fiscal Ecuador como % del PIB - Ministerio de Finanzas / BCE"),
+
+    dict(country=ecuador, name="Deuda Publica EC (% PIB)",
+         unit="% PIB", frequency="annual", category="fiscal",
+         connector_type="API", api_provider="bce", api_serie_id="DeudaPublica",
+         source_url="https://www.finanzas.gob.ec/estadisticas/",
+         description="Deuda pública total Ecuador como % del PIB - Ministerio de Finanzas. Incluye deuda interna y externa"),
+
+    dict(country=ecuador, name="Generacion Hidraulica EC (GWh)",
+         unit="GWh", frequency="monthly", category="energy",
+         connector_type="MANUAL", api_provider=None, api_serie_id=None,
+         source_url="https://www.cenace.gob.ec/estadistica-e-informacion-del-sni/",
+         description="Generación hidráulica mensual Ecuador en GWh - CENACE. Representa ~70% de la matriz eléctrica nacional"),
+
+    dict(country=ecuador, name="Penetracion Renovable EC (%)",
+         unit="%", frequency="monthly", category="energy",
+         connector_type="MANUAL", api_provider=None, api_serie_id=None,
+         source_url="https://www.cenace.gob.ec",
+         description="Porcentaje de generación renovable en la matriz eléctrica Ecuador - CENACE/ARCERNNR"),
+
+    dict(country=ecuador, name="Cuenta Corriente EC (% PIB)",
+         unit="% PIB", frequency="annual", category="external",
+         connector_type="API", api_provider="bce", api_serie_id="CuentaCorriente",
+         source_url="https://www.bce.fin.ec/index.php/informacioneconomica/sector-externo",
+         description="Cuenta corriente Ecuador como % del PIB - BCE"),
 ]
 
 # ── Upsert idempotente ────────────────────────────────────────────────────────
@@ -514,6 +551,29 @@ for v in ALL_VARIABLES:
 
 session.commit()
 print(f"  Insertadas: {inserted} | Ya existian: {skipped}")
+
+# ── Patch: actualizar Ecuador MANUAL → conector bce donde aplica ──────────────
+BCE_CONNECTOR_UPDATES = {
+    "Reservas Internacionales EC":   ("bce", "ReservasInt"),
+    "Balanza Comercial EC":          ("bce", "BalanzaComercial"),
+    "Exportaciones Petroleo EC":     ("bce", "ExportacionesPetroleo"),
+    "Exportaciones Banano EC":       ("bce", "ExportacionesBanano"),
+    "IPC Ecuador (var. mensual)":    ("bce", "IPC_mensual"),
+    "Tasa Interbancaria EC":         ("bce", "TasaInterbancaria"),
+    "Cuenta Corriente EC (% PIB)":   ("bce", "CuentaCorriente"),
+}
+
+patched = 0
+for var_name, (provider, serie_id) in BCE_CONNECTOR_UPDATES.items():
+    v = session.query(MacroVariable).filter_by(country_id=ecuador.id, name=var_name).first()
+    if v and v.connector_type == "MANUAL":
+        v.connector_type = "API"
+        v.api_provider = provider
+        v.api_serie_id = serie_id
+        patched += 1
+
+session.commit()
+print(f"  Actualizadas a conector BCE: {patched}")
 
 # ── Demo data (ESTIMATION) para variables MANUAL — 24 meses 2024-01 → 2025-12 ─
 # Valores base por nombre de variable

@@ -33,6 +33,7 @@ def get_connector_for_variable(variable_row):
         'fred':       _get_fred,
         'xm':         _get_xm,
         'world_bank': _get_world_bank,
+        'bce':        _get_bce,
     }
 
     factory = CONNECTOR_CLASSES.get(provider)
@@ -71,3 +72,7 @@ def _get_xm():
 def _get_world_bank():
     from connectors.world_bank import WorldBankConnector
     return WorldBankConnector()
+
+def _get_bce():
+    from connectors.bce import BCEConnector
+    return BCEConnector()

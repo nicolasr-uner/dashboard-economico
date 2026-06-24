@@ -6,16 +6,31 @@ import pandas as pd
 
 @celery_app.task
 def ingest_all_active_variables():
-    """Itera sobre las variables activas y delega su extracción de forma asíncrona."""
+    """Itera sobre TODAS las variables activas y las encola (fallback global)."""
     session = SessionLocal()
     try:
         variables = session.query(MacroVariable).filter_by(is_active=True).all()
         for var in variables:
-            # Encola la tarea de extracción en Redis sin bloquear el proceso
             ingest_variable_task.delay(var.id)
-        return f"Se despacharon {len(variables)} tareas de extracción."
+        return f"Despachadas {len(variables)} tareas."
     except Exception as e:
-        print(f"Error despachando tareas: {e}")
+        return str(e)
+    finally:
+        session.close()
+
+
+@celery_app.task
+def ingest_variables_by_category(category: str):
+    """Encola solo las variables activas de una categoría específica."""
+    session = SessionLocal()
+    try:
+        variables = session.query(MacroVariable).filter_by(
+            is_active=True, category=category
+        ).all()
+        for var in variables:
+            ingest_variable_task.delay(var.id)
+        return f"[{category}] Despachadas {len(variables)} tareas."
+    except Exception as e:
         return str(e)
     finally:
         session.close()

@@ -1,7 +1,9 @@
 """
-seed_variables_v2.py — Actualiza variables existentes y agrega nuevas (v2).
-Ejecutar: python scripts/seed_variables_v2.py
+DEPRECADO — No ejecutar este script. Usa seed_variables_v4.py.
 """
+raise SystemExit(
+    "❌ seed_variables_v2.py está DEPRECADO. Usa: python scripts/seed_variables_v4.py"
+)
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

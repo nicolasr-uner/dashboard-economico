@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from django.conf import settings
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_http_methods
 from django.http import JsonResponse
@@ -9,9 +10,23 @@ from .engine import scrape
 from ai_engine.analyzer import analyze_anomaly
 
 
+def _require_token(request):
+    """Devuelve None si el token es válido, o un JsonResponse 401 si no lo es."""
+    configured = getattr(settings, 'SCRAPER_API_TOKEN', '')
+    if not configured:
+        return None  # Sin token configurado → solo entornos de desarrollo local
+    auth = request.headers.get('Authorization', '')
+    if not auth.startswith('Bearer ') or auth[7:] != configured:
+        return JsonResponse({'success': False, 'error': 'Autenticación requerida (Bearer token)'}, status=401)
+    return None
+
+
 @csrf_exempt
 @require_http_methods(["POST"])
 def test_scraper(request):
+    denied = _require_token(request)
+    if denied:
+        return denied
     try:
         data = json.loads(request.body)
         url = data.get('url', '')
@@ -33,6 +48,9 @@ def test_scraper(request):
 @csrf_exempt
 @require_http_methods(["POST"])
 def run_scraper(request, variable_id):
+    denied = _require_token(request)
+    if denied:
+        return denied
     try:
         variable = MacroVariable.objects.get(id=variable_id, is_active=True)
     except MacroVariable.DoesNotExist:
@@ -92,6 +110,9 @@ def run_scraper(request, variable_id):
 @csrf_exempt
 @require_http_methods(["POST"])
 def run_all_scrapers(request):
+    denied = _require_token(request)
+    if denied:
+        return denied
     variables = MacroVariable.objects.filter(is_active=True, source_url__isnull=False).exclude(source_url='')
 
     results = []
