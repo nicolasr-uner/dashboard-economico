@@ -9,8 +9,11 @@ staticfiles/
 .vscode/
 node_modules/
 .streamlit/secrets.toml
+db.sqlite3
+*.sqlite3
 *.sqlite3-wal
 *.sqlite3-shm
+memoria_chat.txt
 .claude/
 .agents/
 test_apis_temp.py
