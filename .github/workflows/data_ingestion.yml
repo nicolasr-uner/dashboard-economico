@@ -10,6 +10,9 @@ on:
 jobs:
   ingest_data:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
 
     steps:
     - name: Checkout del código
@@ -34,3 +37,13 @@ jobs:
       run: |
         # Usamos el script backfill.py para forzar una sincronización
         python scripts/backfill.py --days 7 --headless
+
+    - name: Alertar si la ingesta falla
+      if: failure()
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        gh issue create \
+          --title "🔴 Falla en el pipeline de ingesta" \
+          --body "El workflow de ingesta falló. Revisar el run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
+          || echo "No se pudo crear el issue de alerta"

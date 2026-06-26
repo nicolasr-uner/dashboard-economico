@@ -35,7 +35,6 @@ scripts/
   read_excel_models.py    Ingestor de modelos financieros Excel
 config/
   data_catalog.yaml       Inventario maestro: variables, fuentes, gaps, unidades
-  settings.py             Django settings (API REST legacy)
 docs/
   audit_report.md         Auditoria completa del data lake
   validation_report.md    Reporte automatico de validacion de datos
@@ -123,16 +122,17 @@ python scripts/validate_data.py --output md
 
 ## Estado del Proyecto
 
-**Cobertura base (sin keys):** ~23% — Brasil (BCB) y Colombia energetico (XM) completamente funcionales.  
-**Con FRED + Banxico configurados:** ~60% — commodities globales, mercados USA y Mexico activos.
+**Cobertura real (medida 2026-06-24):** **~92 %** — 208 de 225 variables con datos, 79.624 registros en `fact_timeseries`. La base de datos está madura; el reto es **operativo**: la frescura depende de que el pipeline de ingesta corra a diario (ver `.github/workflows/data_ingestion.yml`).
 
 | Fuente | Estado | Key? | Variables |
 |--------|--------|------|-----------|
 | BCB Brasil | ✅ Funcional | No | Selic, IPCA, USD/BRL, CDI, Desempleo |
-| XM Colombia | ✅ Funcional | No | Aportes Hidricos energeticos |
+| XM Colombia | ✅ Funcional | No | Precio de Bolsa, Aportes Hídricos |
 | World Bank | ✅ Funcional | No | PIB, Inflacion, Desempleo (anual, 190 paises) |
 | FRED | ⚡ Requiere key | Si | WTI, Brent, Gold, S&P500, VIX, Fed Funds, etc. |
 | Banxico | ⚡ Requiere key | Si | Tasa objetivo, TIIE, USD/MXN, IPC MX |
 | BanRep Colombia | ⚠️ Deprecado 2025 | No | Redirige a World Bank automaticamente |
 
-Ver `docs/audit_report.md` para diagnostico completo y [SETUP.md](SETUP.md) para instrucciones de configuracion.
+> **Entrypoint canónico:** `streamlit_app.py` (monolito, 100 % funcional). La migración multipágina está aparcada en `pages_wip/` (incompleta).
+
+Ver **[docs/AUDIT_cerebro-economico-nla_2026-06-24.md](docs/AUDIT_cerebro-economico-nla_2026-06-24.md)** para el diagnóstico actual y el plan de acción. (`docs/audit_report.md` y `docs/validation_report.md` son de abril 2026 y están **obsoletos**.)

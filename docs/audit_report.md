@@ -1,3 +1,7 @@
+> ⚠️ **OBSOLETO (2026-06-24).** Este informe de abril reporta ~13 % de cobertura. La medición en vivo del 2026-06-24 mostró **~92 %** (208/225 variables, 79.624 filas). Para el estado actual y el plan de acción, ver **[AUDIT_cerebro-economico-nla_2026-06-24.md](AUDIT_cerebro-economico-nla_2026-06-24.md)**. Se conserva como referencia histórica.
+
+---
+
 # Auditoria de Arquitectura de Datos — Cerebro Economico NLA
 **Fecha:** 2026-04-14  
 **Tipo:** Diagnostico profundo + Gap Analysis  
